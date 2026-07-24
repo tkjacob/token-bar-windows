@@ -1,0 +1,10 @@
+.codex-tmp/
+dist/
+tokenbar.ini
+*.user
+*.suo
+*.log
+.vs/
+.vscode/
+AGENTS.md
+design/token-bar-tray-flyout-concept.png
