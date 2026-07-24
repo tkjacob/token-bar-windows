@@ -23,7 +23,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ## 설치
 
-1. [Releases](../../releases/latest)에서 최신 ZIP을 내려받아 압축을 풉니다.
+1. [Releases](https://github.com/tkjacob/token-bar-windows/releases/latest)에서 최신 ZIP을 내려받아 압축을 풉니다.
 2. 압축을 푼 폴더에서 PowerShell을 열고 다음 명령을 실행합니다.
 
 ```powershell
