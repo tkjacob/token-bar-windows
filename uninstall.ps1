@@ -4,7 +4,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$installRootFull = [IO.Path]::GetFullPath($InstallRoot)
+$installRootFull = [IO.Path]::GetFullPath($InstallRoot).TrimEnd(
+    [IO.Path]::DirectorySeparatorChar,
+    [IO.Path]::AltDirectorySeparatorChar)
+$installBoundary = $installRootFull + [IO.Path]::DirectorySeparatorChar
 
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 Remove-ItemProperty -LiteralPath $runKey -Name TokenBar -ErrorAction SilentlyContinue
@@ -12,7 +15,7 @@ Remove-ItemProperty -LiteralPath $runKey -Name TokenBar -ErrorAction SilentlyCon
 Get-CimInstance Win32_Process | Where-Object {
     ($_.ExecutablePath -and
         [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith(
-            $installRootFull, [StringComparison]::OrdinalIgnoreCase)) -or
+            $installBoundary, [StringComparison]::OrdinalIgnoreCase)) -or
     ($_.Name -eq 'powershell.exe' -and $_.CommandLine -and
         $_.CommandLine.IndexOf(
             (Join-Path $installRootFull 'src\TokenBar.Host.ps1'),
@@ -28,14 +31,17 @@ if (-not (Test-Path -LiteralPath $installRootFull)) {
 
 $localAppDataFull = [IO.Path]::GetFullPath($env:LOCALAPPDATA)
 if (-not $installRootFull.StartsWith(
-    $localAppDataFull + [IO.Path]::DirectorySeparatorChar,
+    $localAppDataFull.TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar) +
+        [IO.Path]::DirectorySeparatorChar,
     [StringComparison]::OrdinalIgnoreCase)) {
     throw "For safety, automatic removal is limited to LOCALAPPDATA: $installRootFull"
 }
 
 $currentScript = [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
 if ($currentScript.StartsWith(
-    $installRootFull + [IO.Path]::DirectorySeparatorChar,
+    $installBoundary,
     [StringComparison]::OrdinalIgnoreCase)) {
     $escapedRoot = $installRootFull.Replace("'", "''")
     $cleanup = "Start-Sleep -Milliseconds 500; Remove-Item -LiteralPath '$escapedRoot' -Recurse -Force"
@@ -47,4 +53,3 @@ if ($currentScript.StartsWith(
 }
 
 Write-Host "Token Bar removed from: $installRootFull"
-

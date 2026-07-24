@@ -30,11 +30,7 @@ namespace TokenBar
 
             try
             {
-                FileInfo[] files = new DirectoryInfo(root)
-                    .EnumerateFiles("*.jsonl", SearchOption.AllDirectories)
-                    .OrderByDescending(delegate(FileInfo file) { return file.LastWriteTimeUtc; })
-                    .Take(MaxFiles)
-                    .ToArray();
+                FileInfo[] files = SelectNewestFiles(root, MaxFiles);
 
                 Dictionary<string, ProviderUsage> byLimit =
                     new Dictionary<string, ProviderUsage>(StringComparer.OrdinalIgnoreCase);
@@ -95,6 +91,36 @@ namespace TokenBar
                 snapshot.Codex.Error = "Codex 로그 읽기 실패: " + ex.Message;
             }
             return snapshot;
+        }
+
+        internal static FileInfo[] SelectNewestFiles(string root, int maxFiles)
+        {
+            if (maxFiles <= 0) return new FileInfo[0];
+
+            List<FileInfo> newest = new List<FileInfo>(maxFiles + 1);
+            FileInfoComparer comparer = new FileInfoComparer();
+            foreach (FileInfo file in new DirectoryInfo(root)
+                .EnumerateFiles("*.jsonl", SearchOption.AllDirectories))
+            {
+                int index = newest.BinarySearch(file, comparer);
+                if (index < 0) index = ~index;
+                newest.Insert(index, file);
+                if (newest.Count > maxFiles)
+                    newest.RemoveAt(0);
+            }
+            newest.Reverse();
+            return newest.ToArray();
+        }
+
+        private sealed class FileInfoComparer : IComparer<FileInfo>
+        {
+            public int Compare(FileInfo left, FileInfo right)
+            {
+                int byTime = left.LastWriteTimeUtc.CompareTo(right.LastWriteTimeUtc);
+                if (byTime != 0) return byTime;
+                return string.Compare(left.FullName, right.FullName,
+                    StringComparison.OrdinalIgnoreCase);
+            }
         }
 
         private static IEnumerable<string> ReadTailLinesReverse(string path)
@@ -263,4 +289,3 @@ namespace TokenBar
         }
     }
 }
-

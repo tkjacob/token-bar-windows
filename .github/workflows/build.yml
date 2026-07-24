@@ -9,6 +9,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Run regression tests
+        shell: powershell
+        run: .\tests\run-tests.ps1
       - name: Build Token Bar
         shell: powershell
         run: .\build.ps1
@@ -17,4 +20,3 @@ jobs:
         with:
           name: TokenBar-Windows
           path: dist/TokenBar.exe
-

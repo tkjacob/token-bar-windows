@@ -4,6 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Version](https://img.shields.io/badge/version-1.0.1-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -12,6 +13,8 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 - 단일 실행 파일: WebView, Electron, Python, 별도 서버가 필요 없습니다.
 - Codex: 로컬 세션 로그의 `rate_limits` 이벤트를 읽습니다.
 - Claude: 공식 `/usage` 화면을 숨겨진 Windows 가상 터미널로 최대 15분에 한 번 확인합니다.
+- Codex 로그 검색과 파싱은 백그라운드에서 수행되므로 로그가 많이 쌓여도 트레이 클릭을 막지 않습니다.
+- Claude CLI는 PATH의 native 실행 파일, npm의 `.cmd`·PowerShell wrapper 및 확장자 없는 실행 shim을 지원합니다.
 - 인증정보를 읽거나 저장하지 않습니다. 각 CLI에 이미 로그인되어 있어야 합니다.
 - 우측 하단 `CA` 트레이 아이콘을 누르면 시계 위에 Windows 11 스타일 패널이 열립니다.
 - 패널 밖을 클릭하면 자동으로 닫히며 작업표시줄 위에 상시 오버레이하지 않습니다.
@@ -56,6 +59,14 @@ Windows PowerShell에서:
 - 일반 PC에 옮길 때: `dist\TokenBar.exe`만으로 실행 가능
 - Smart App Control이 켜진 PC: 프로젝트 폴더를 유지하고 `run.ps1`로 실행
 
+회귀 테스트를 실행하려면:
+
+```powershell
+.\tests\run-tests.ps1
+```
+
+테스트용 파일과 컴파일 결과는 프로젝트의 `.codex-tmp` 안에서만 생성되며 테스트 종료 시 제거됩니다.
+
 ## 사용법
 
 - `CA` 아이콘 클릭: Token Bar 패널 열기/닫기
@@ -80,6 +91,13 @@ ClaudeRefreshMinutes=15
 ## 개인정보
 
 Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤트 시각뿐입니다. Claude `/usage` 화면 텍스트는 메모리에서 필요한 숫자만 해석한 뒤 버립니다. 프롬프트, 응답, API 키, OAuth 토큰은 수집하거나 캐시하지 않으며, Token Bar 자체가 별도 네트워크 요청을 보내지도 않습니다.
+
+## v1.0.1
+
+- 대규모 Codex 세션 폴더에서도 최신 80개 후보만 유지하고 수집을 UI 스레드 밖에서 수행합니다.
+- Claude 수집의 입력 대기 시간을 전체 15초 제한에 포함했습니다.
+- `claude.exe`, `.com`, `.cmd`, `.bat`, `.ps1`, 확장자 없는 native shim을 PATH와 PATHEXT 기준으로 탐색합니다.
+- 제거 시 설치 폴더 경계를 확인해 `TokenBarBackup` 같은 형제 폴더의 프로세스를 종료하지 않습니다.
 
 ## 참고
 

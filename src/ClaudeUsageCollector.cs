@@ -23,15 +23,15 @@ namespace TokenBar
             ProviderUsage result = new ProviderUsage { Name = "Claude", CollectedAt = DateTime.Now };
             try
             {
-                string command = FindClaudeExecutable();
+                ClaudeCommand command = FindClaudeCommand();
                 if (command == null)
                 {
                     result.Error = "Claude CLI를 찾을 수 없습니다.";
                     return result;
                 }
 
-                string commandLine = Quote(command) +
-                    " --settings \"{\\\"disableAllHooks\\\":true}\"";
+                string commandLine = command.BuildCommandLine(
+                    "--settings \"{\\\"disableAllHooks\\\":true}\"");
 
                 string captured = ConPtyCapture.Run(
                     commandLine,
@@ -143,27 +143,108 @@ namespace TokenBar
             return Regex.Replace(text, @"[ \t]+", " ");
         }
 
-        private static string FindClaudeExecutable()
+        internal static ClaudeCommand FindClaudeCommand()
         {
-            string path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-            foreach (string directory in path.Split(Path.PathSeparator))
-            {
-                string candidate;
-                try { candidate = Path.Combine(directory.Trim(), "claude.exe"); }
-                catch { continue; }
-                if (File.Exists(candidate)) return candidate;
-            }
-            string npmRoot = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "npm");
-            string native = Path.Combine(npmRoot, "node_modules", "@anthropic-ai",
-                "claude-code", "bin", "claude.exe");
-            return File.Exists(native) ? native : null;
+            return FindClaudeCommand(
+                Environment.GetEnvironmentVariable("PATH"),
+                Environment.GetEnvironmentVariable("PATHEXT"),
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
         }
 
-        private static string Quote(string value)
+        internal static ClaudeCommand FindClaudeCommand(
+            string path, string pathExt, string applicationData)
+        {
+            path = path ?? string.Empty;
+            List<string> extensions = new List<string>();
+            foreach (string extension in (pathExt ?? string.Empty).Split(Path.PathSeparator))
+                AddExtension(extensions, extension);
+            AddExtension(extensions, ".exe");
+            AddExtension(extensions, ".cmd");
+            AddExtension(extensions, ".bat");
+            AddExtension(extensions, ".com");
+            AddExtension(extensions, ".ps1");
+            // Match Windows command resolution: executable PATHEXT entries win over
+            // a same-name extensionless shell script. Native extensionless shims
+            // remain supported as the final candidate.
+            extensions.Add(string.Empty);
+
+            foreach (string directory in path.Split(Path.PathSeparator))
+            {
+                string cleanDirectory = directory.Trim().Trim('"');
+                if (cleanDirectory.Length == 0) continue;
+                foreach (string extension in extensions)
+                {
+                    string candidate;
+                    try { candidate = Path.Combine(cleanDirectory, "claude" + extension); }
+                    catch { continue; }
+                    if (File.Exists(candidate)) return new ClaudeCommand(candidate);
+                }
+            }
+
+            string npmRoot = Path.Combine(applicationData ?? string.Empty, "npm");
+            foreach (string extension in extensions)
+            {
+                string wrapper = Path.Combine(npmRoot, "claude" + extension);
+                if (File.Exists(wrapper)) return new ClaudeCommand(wrapper);
+            }
+            string native = Path.Combine(npmRoot, "node_modules", "@anthropic-ai",
+                "claude-code", "bin", "claude.exe");
+            return File.Exists(native) ? new ClaudeCommand(native) : null;
+        }
+
+        private static void AddExtension(List<string> extensions, string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            string normalized = value.Trim();
+            if (!normalized.StartsWith(".", StringComparison.Ordinal))
+                normalized = "." + normalized;
+            foreach (string existing in extensions)
+            {
+                if (string.Equals(existing, normalized,
+                    StringComparison.OrdinalIgnoreCase))
+                    return;
+            }
+            extensions.Add(normalized);
+        }
+
+        internal static string Quote(string value)
         {
             return "\"" + value.Replace("\"", "\"\"") + "\"";
+        }
+    }
+
+    internal sealed class ClaudeCommand
+    {
+        public readonly string Path;
+
+        public ClaudeCommand(string path)
+        {
+            Path = System.IO.Path.GetFullPath(path);
+        }
+
+        public string BuildCommandLine(string arguments)
+        {
+            string extension = System.IO.Path.GetExtension(Path);
+            if (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
+                extension.Equals(".bat", StringComparison.OrdinalIgnoreCase))
+            {
+                string host = Environment.GetEnvironmentVariable("COMSPEC");
+                if (string.IsNullOrEmpty(host)) host = "cmd.exe";
+                return ClaudeUsageCollector.Quote(host) +
+                    " /d /s /c \"\"" + Path + "\" " + arguments + "\"";
+            }
+            if (extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+            {
+                string windows = Environment.GetFolderPath(
+                    Environment.SpecialFolder.Windows);
+                string host = System.IO.Path.Combine(windows, "System32",
+                    "WindowsPowerShell", "v1.0", "powershell.exe");
+                if (!File.Exists(host)) host = "powershell.exe";
+                return ClaudeUsageCollector.Quote(host) +
+                    " -NoLogo -NoProfile -ExecutionPolicy Bypass -File " +
+                    ClaudeUsageCollector.Quote(Path) + " " + arguments;
+            }
+            return ClaudeUsageCollector.Quote(Path) + " " + arguments;
         }
     }
 
@@ -189,6 +270,7 @@ namespace TokenBar
         public static string Run(string commandLine, string currentDirectory,
             IEnumerable<TimedInput> inputs, int overallTimeoutMilliseconds)
         {
+            Stopwatch clock = Stopwatch.StartNew();
             IntPtr inputRead = IntPtr.Zero;
             IntPtr inputWrite = IntPtr.Zero;
             IntPtr outputRead = IntPtr.Zero;
@@ -262,7 +344,6 @@ namespace TokenBar
                 using (FileStream writer = new FileStream(safeInput, FileAccess.Write, 1024, false))
                 {
                     inputWrite = IntPtr.Zero;
-                    Stopwatch clock = Stopwatch.StartNew();
                     foreach (TimedInput item in inputs)
                     {
                         if (clock.ElapsedMilliseconds + item.DelayMilliseconds > overallTimeoutMilliseconds)
@@ -274,8 +355,8 @@ namespace TokenBar
                     }
                 }
 
-                uint remaining = (uint)Math.Max(0,
-                    overallTimeoutMilliseconds);
+                uint remaining = (uint)RemainingTimeoutMilliseconds(
+                    overallTimeoutMilliseconds, clock.ElapsedMilliseconds);
                 uint wait = WaitForSingleObject(processInfo.hProcess, remaining);
                 if (wait == WaitTimeout)
                     TerminateProcess(processInfo.hProcess, 0);
@@ -303,6 +384,14 @@ namespace TokenBar
                 }
                 captured.Dispose();
             }
+        }
+
+        internal static int RemainingTimeoutMilliseconds(
+            int overallTimeoutMilliseconds, long elapsedMilliseconds)
+        {
+            long remaining = (long)overallTimeoutMilliseconds - elapsedMilliseconds;
+            if (remaining <= 0) return 0;
+            return remaining > int.MaxValue ? int.MaxValue : (int)remaining;
         }
 
         private static void Check(bool success, string operation)

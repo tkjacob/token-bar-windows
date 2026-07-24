@@ -34,6 +34,8 @@ namespace TokenBar
         private UsageSnapshot snapshot = new UsageSnapshot();
         private ProviderUsage claude =
             new ProviderUsage { Name = "Claude", Error = "갱신 중…" };
+        private bool collectingCodex;
+        private bool codexRefreshPending;
         private bool collectingClaude;
         private DateTime lastClaudeAttempt = DateTime.MinValue;
         private DateTime lastAutomaticHide = DateTime.MinValue;
@@ -366,8 +368,7 @@ namespace TokenBar
 
         private void RefreshAll(bool forceClaude)
         {
-            snapshot = CodexUsageReader.Read(claude);
-            UpdatePresentation();
+            RequestCodexRefresh();
 
             TimeSpan age = DateTime.Now - lastClaudeAttempt;
             if (!collectingClaude &&
@@ -385,13 +386,43 @@ namespace TokenBar
                         {
                             claude = updated;
                             collectingClaude = false;
-                            snapshot = CodexUsageReader.Read(claude);
-                            UpdatePresentation();
+                            RequestCodexRefresh();
                         });
                     }
                     catch { collectingClaude = false; }
                 });
             }
+        }
+
+        private void RequestCodexRefresh()
+        {
+            if (collectingCodex)
+            {
+                codexRefreshPending = true;
+                return;
+            }
+
+            collectingCodex = true;
+            ProviderUsage claudeAtStart = claude;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                UsageSnapshot updated = CodexUsageReader.Read(claudeAtStart);
+                try
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        snapshot = updated;
+                        collectingCodex = false;
+                        UpdatePresentation();
+                        if (codexRefreshPending)
+                        {
+                            codexRefreshPending = false;
+                            RequestCodexRefresh();
+                        }
+                    });
+                }
+                catch { collectingCodex = false; }
+            });
         }
 
         private void UpdatePresentation()
