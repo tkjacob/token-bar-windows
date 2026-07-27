@@ -13,7 +13,7 @@ $packageRootFull = [IO.Path]::GetFullPath($packageRoot)
 if ($installRootFull -ne $packageRootFull) {
     New-Item -ItemType Directory -Force -Path $installRootFull | Out-Null
     foreach ($file in @(
-        'build.ps1', 'run.ps1', 'install.ps1', 'uninstall.ps1',
+        'build.ps1', 'run.cmd', 'run.ps1', 'install.ps1', 'uninstall.ps1',
         'README.md', 'LICENSE', 'VERSION'
     )) {
         $source = Join-Path $packageRootFull $file

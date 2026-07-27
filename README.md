@@ -4,7 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.1-blue)
+![Version](https://img.shields.io/badge/version-1.0.2-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -52,12 +52,15 @@ Windows PowerShell에서:
 .\run.ps1
 ```
 
+파일 탐색기에서 실행하려면 `run.cmd`를 더블클릭합니다. Windows에서 `.ps1` 파일이
+메모장으로 연결되어 있어도 `run.cmd`가 PowerShell을 통해 Token Bar를 실행합니다.
+
 기본 결과물은 `dist\TokenBar.exe` 하나입니다. Windows에 포함된 .NET Framework 컴파일러를 사용하므로 SDK 설치가 필요 없습니다.
 
 `run.ps1`은 먼저 이 실행 파일을 시작합니다. Smart App Control이 로컬에서 빌드한 서명되지 않은 EXE를 차단하는 PC에서는, 보안 설정을 바꾸지 않고 Windows PowerShell 안에서 같은 소스를 메모리 컴파일해 자동 실행합니다.
 
 - 일반 PC에 옮길 때: `dist\TokenBar.exe`만으로 실행 가능
-- Smart App Control이 켜진 PC: 프로젝트 폴더를 유지하고 `run.ps1`로 실행
+- Smart App Control이 켜진 PC: 프로젝트 폴더를 유지하고 `run.cmd`를 더블클릭하거나 `run.ps1`로 실행
 
 회귀 테스트를 실행하려면:
 
@@ -91,6 +94,11 @@ ClaudeRefreshMinutes=15
 ## 개인정보
 
 Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤트 시각뿐입니다. Claude `/usage` 화면 텍스트는 메모리에서 필요한 숫자만 해석한 뒤 버립니다. 프롬프트, 응답, API 키, OAuth 토큰은 수집하거나 캐시하지 않으며, Token Bar 자체가 별도 네트워크 요청을 보내지도 않습니다.
+
+## v1.0.2
+
+- `.ps1` 파일이 메모장으로 연결된 PC에서도 파일 탐색기에서 바로 실행할 수 있도록 `run.cmd`를 추가했습니다.
+- 설치본과 배포 ZIP에 `run.cmd`가 포함됩니다.
 
 ## v1.0.1
 

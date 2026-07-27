@@ -19,7 +19,7 @@ New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 & (Join-Path $projectRoot 'build.ps1')
 
 foreach ($file in @(
-    'build.ps1', 'run.ps1', 'install.ps1', 'uninstall.ps1',
+    'build.ps1', 'run.cmd', 'run.ps1', 'install.ps1', 'uninstall.ps1',
     'README.md', 'LICENSE', 'VERSION'
 )) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $file) -Destination $stageRoot
