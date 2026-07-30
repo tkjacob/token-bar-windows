@@ -1,7 +1,9 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -37,11 +39,17 @@ namespace TokenBar
         private bool collectingCodex;
         private bool codexRefreshPending;
         private bool collectingClaude;
+        private bool checkingUpdates;
+        private bool resourcesDisposed;
+        private Icon updateIcon;
+        private UpdateInfo availableUpdate;
+        private DateTime lastUpdateCheckRequestUtc = DateTime.MinValue;
         private DateTime lastClaudeAttempt = DateTime.MinValue;
         private DateTime lastAutomaticHide = DateTime.MinValue;
         private DateTime openedAt = DateTime.MinValue;
         private Rectangle refreshButton;
         private Rectangle settingsButton;
+        private Rectangle updateButton;
 
         public TokenBarForm(AppSettings settings)
         {
@@ -52,9 +60,9 @@ namespace TokenBar
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Width = 400;
-            Height = 340;
-            MinimumSize = new Size(400, 340);
-            MaximumSize = new Size(400, 340);
+            Height = PreferredHeight(settings.ShowCodexFiveHour);
+            MinimumSize = new Size(400, Height);
+            MaximumSize = new Size(400, Height);
             BackColor = Color.FromArgb(29, 31, 35);
             DoubleBuffered = true;
             Opacity = 0;
@@ -65,7 +73,7 @@ namespace TokenBar
             smallFont = new Font("Segoe UI", 8.0f, FontStyle.Regular, GraphicsUnit.Point);
             Font = new Font("Segoe UI", 9.0f, FontStyle.Regular, GraphicsUnit.Point);
 
-            applicationIcon = CreateTrayIcon();
+            applicationIcon = CreateTrayIcon(false);
             trayMenu = BuildMenu();
             trayIcon = new NotifyIcon();
             trayIcon.Icon = applicationIcon;
@@ -73,6 +81,7 @@ namespace TokenBar
             trayIcon.ContextMenuStrip = trayMenu;
             trayIcon.Visible = true;
             trayIcon.MouseDown += OnTrayMouseDown;
+            trayIcon.BalloonTipClicked += delegate { OpenAvailableUpdate(); };
 
             refreshTimer = new System.Windows.Forms.Timer();
             refreshTimer.Interval = 30000;
@@ -110,17 +119,6 @@ namespace TokenBar
                     Hide();
                 }
             };
-            FormClosed += delegate
-            {
-                trayIcon.Visible = false;
-                trayIcon.Dispose();
-                trayMenu.Dispose();
-                applicationIcon.Dispose();
-                titleFont.Dispose();
-                providerFont.Dispose();
-                valueFont.Dispose();
-                smallFont.Dispose();
-            };
             Resize += delegate { ApplyRoundedRegion(); };
             MouseUp += OnFlyoutMouseUp;
             MouseMove += OnFlyoutMouseMove;
@@ -135,6 +133,24 @@ namespace TokenBar
                 cp.ClassStyle |= CsDropShadow;
                 return cp;
             }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !resourcesDisposed)
+            {
+                resourcesDisposed = true;
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                trayMenu.Dispose();
+                applicationIcon.Dispose();
+                if (updateIcon != null) updateIcon.Dispose();
+                titleFont.Dispose();
+                providerFont.Dispose();
+                valueFont.Dispose();
+                smallFont.Dispose();
+            }
+            base.Dispose(disposing);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -154,30 +170,42 @@ namespace TokenBar
             }
 
             TextRenderer.DrawText(e.Graphics, "Token Bar", titleFont,
-                new Rectangle(22, 16, 230, 32), Color.FromArgb(246, 247, 249),
+                new Rectangle(22, 16, 160, 32), Color.FromArgb(246, 247, 249),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.NoPadding);
 
+            updateButton = Rectangle.Empty;
+            if (availableUpdate != null)
+            {
+                updateButton = new Rectangle(187, 18, 132, 26);
+                DrawUpdateBadge(e.Graphics, updateButton, availableUpdate.Version);
+            }
             refreshButton = new Rectangle(326, 17, 28, 28);
             settingsButton = new Rectangle(360, 17, 28, 28);
             DrawRefreshIcon(e.Graphics, refreshButton);
             DrawSettingsIcon(e.Graphics, settingsButton);
 
-            DrawProviderCard(e.Graphics, new Rectangle(16, 60, 368, 112),
-                "Codex", snapshot.Codex, Color.FromArgb(70, 139, 255));
-            DrawProviderCard(e.Graphics, new Rectangle(16, 182, 368, 112),
-                "Claude", snapshot.Claude, Color.FromArgb(255, 126, 51));
+            bool showCodexFiveHour = ShouldShowFiveHour(
+                "Codex", settings.ShowCodexFiveHour);
+            Rectangle codexCard = CodexCardBounds(showCodexFiveHour);
+            Rectangle claudeCard = ClaudeCardBounds(showCodexFiveHour);
+            int footerTop = FooterTop(showCodexFiveHour);
+            DrawProviderCard(e.Graphics, codexCard,
+                "Codex", snapshot.Codex, Color.FromArgb(70, 139, 255),
+                showCodexFiveHour);
+            DrawProviderCard(e.Graphics, claudeCard,
+                "Claude", snapshot.Claude, Color.FromArgb(255, 126, 51), true);
 
             string updated = "Updated " + LatestAge();
             if (collectingClaude) updated += " · Claude 새로고침 중";
             TextRenderer.DrawText(e.Graphics, updated, smallFont,
-                new Rectangle(22, 305, 350, 22), Color.FromArgb(170, 178, 188),
+                new Rectangle(22, footerTop, 350, 22), Color.FromArgb(170, 178, 188),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
 
         private void DrawProviderCard(Graphics graphics, Rectangle area, string name,
-            ProviderUsage provider, Color accent)
+            ProviderUsage provider, Color accent, bool showFiveHour)
         {
             using (GraphicsPath path = RoundedRectangle(area, 12))
             using (SolidBrush background = new SolidBrush(Color.FromArgb(115, 20, 22, 26)))
@@ -196,17 +224,42 @@ namespace TokenBar
 
             UsageBucket fiveHour = FindBucket(provider, 300, 0);
             UsageBucket weekly = FindBucket(provider, 10080, 1);
-            DrawUsageRow(graphics,
-                new Rectangle(area.Left + 16, area.Top + 39, area.Width - 32, 26),
-                "5h", fiveHour, accent);
+            if (showFiveHour)
+            {
+                DrawUsageRow(graphics,
+                    new Rectangle(area.Left + 16, area.Top + 39, area.Width - 32, 26),
+                    "5h", fiveHour, accent);
 
-            using (Pen divider = new Pen(Color.FromArgb(38, 220, 224, 230)))
-                graphics.DrawLine(divider, area.Left + 16, area.Top + 68,
-                    area.Right - 16, area.Top + 68);
+                using (Pen divider = new Pen(Color.FromArgb(38, 220, 224, 230)))
+                    graphics.DrawLine(divider, area.Left + 16, area.Top + 68,
+                        area.Right - 16, area.Top + 68);
 
-            DrawUsageRow(graphics,
-                new Rectangle(area.Left + 16, area.Top + 73, area.Width - 32, 26),
-                "7d", weekly, accent);
+                DrawUsageRow(graphics,
+                    new Rectangle(area.Left + 16, area.Top + 73, area.Width - 32, 26),
+                    "7d", weekly, accent);
+            }
+            else
+            {
+                DrawUsageRow(graphics,
+                    new Rectangle(area.Left + 16, area.Top + 39, area.Width - 32, 26),
+                    "7d", weekly, accent);
+            }
+        }
+
+        private void DrawUpdateBadge(Graphics graphics, Rectangle area, string version)
+        {
+            using (GraphicsPath path = RoundedRectangle(area, 12))
+            using (SolidBrush background =
+                new SolidBrush(Color.FromArgb(60, 70, 139, 255)))
+            using (Pen border = new Pen(Color.FromArgb(160, 70, 139, 255)))
+            {
+                graphics.FillPath(background, path);
+                graphics.DrawPath(border, path);
+            }
+            TextRenderer.DrawText(graphics, "v" + version + " 업데이트", smallFont,
+                area, Color.FromArgb(230, 238, 255),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
 
         private void DrawUsageRow(Graphics graphics, Rectangle area, string label,
@@ -299,7 +352,9 @@ namespace TokenBar
         private void OnFlyoutMouseUp(object sender, MouseEventArgs e)
         {
             if (e.Button != MouseButtons.Left) return;
-            if (refreshButton.Contains(e.Location))
+            if (updateButton.Contains(e.Location))
+                OpenAvailableUpdate();
+            else if (refreshButton.Contains(e.Location))
                 RefreshAll(true);
             else if (settingsButton.Contains(e.Location))
                 trayMenu.Show(this, new Point(settingsButton.Right,
@@ -308,7 +363,8 @@ namespace TokenBar
 
         private void OnFlyoutMouseMove(object sender, MouseEventArgs e)
         {
-            Cursor = refreshButton.Contains(e.Location) ||
+            Cursor = updateButton.Contains(e.Location) ||
+                refreshButton.Contains(e.Location) ||
                 settingsButton.Contains(e.Location)
                 ? Cursors.Hand : Cursors.Default;
         }
@@ -369,6 +425,7 @@ namespace TokenBar
         private void RefreshAll(bool forceClaude)
         {
             RequestCodexRefresh();
+            RequestUpdateCheck();
 
             TimeSpan age = DateTime.Now - lastClaudeAttempt;
             if (!collectingClaude &&
@@ -392,6 +449,82 @@ namespace TokenBar
                     catch { collectingClaude = false; }
                 });
             }
+        }
+
+        private void RequestUpdateCheck()
+        {
+            DateTime now = DateTime.UtcNow;
+            if (checkingUpdates ||
+                (lastUpdateCheckRequestUtc != DateTime.MinValue &&
+                 now >= lastUpdateCheckRequestUtc &&
+                 now - lastUpdateCheckRequestUtc < UpdateChecker.CheckInterval))
+                return;
+
+            checkingUpdates = true;
+            lastUpdateCheckRequestUtc = now;
+            string currentVersion = AppVersion.Read();
+            string statePath = Path.Combine(
+                RuntimePaths.BaseDirectory, "update-state.ini");
+            UpdateChecker.BeginCheck(
+                delegate { return UpdateChecker.Check(currentVersion, statePath); },
+                delegate(UpdateCheckOutcome outcome)
+                {
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            checkingUpdates = false;
+                            ApplyUpdateOutcome(outcome);
+                        });
+                    }
+                    catch { checkingUpdates = false; }
+                });
+        }
+
+        private void ApplyUpdateOutcome(UpdateCheckOutcome outcome)
+        {
+            availableUpdate = outcome == null ? null : outcome.Update;
+            if (availableUpdate != null)
+            {
+                Icon previousUpdateIcon = updateIcon;
+                updateIcon = CreateTrayIcon(true);
+                trayIcon.Icon = updateIcon;
+                if (previousUpdateIcon != null) previousUpdateIcon.Dispose();
+                if (outcome.ShouldNotify)
+                {
+                    trayIcon.BalloonTipTitle = "Token Bar 업데이트";
+                    trayIcon.BalloonTipText =
+                        "v" + availableUpdate.Version + " 버전을 사용할 수 있습니다.";
+                    trayIcon.BalloonTipIcon = ToolTipIcon.Info;
+                    trayIcon.ShowBalloonTip(5000);
+                }
+            }
+            else
+            {
+                trayIcon.Icon = applicationIcon;
+                if (updateIcon != null)
+                {
+                    updateIcon.Dispose();
+                    updateIcon = null;
+                }
+            }
+            UpdatePresentation();
+        }
+
+        private void OpenAvailableUpdate()
+        {
+            if (availableUpdate == null ||
+                !UpdateChecker.IsAllowedReleaseUrl(availableUpdate.ReleaseUrl))
+                return;
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = availableUpdate.ReleaseUrl,
+                    UseShellExecute = true
+                });
+            }
+            catch { }
         }
 
         private void RequestCodexRefresh()
@@ -436,13 +569,52 @@ namespace TokenBar
 
         private string BuildTrayTooltip()
         {
-            UsageBucket c5 = FindBucket(snapshot.Codex, 300, 0);
-            UsageBucket c7 = FindBucket(snapshot.Codex, 10080, 1);
-            UsageBucket a5 = FindBucket(snapshot.Claude, 300, 0);
-            UsageBucket a7 = FindBucket(snapshot.Claude, 10080, 1);
+            return BuildTrayTooltip(snapshot, settings.ShowCodexFiveHour);
+        }
+
+        internal static string BuildTrayTooltip(UsageSnapshot value,
+            bool showCodexFiveHour)
+        {
+            UsageBucket c5 = FindBucket(value.Codex, 300, 0);
+            UsageBucket c7 = FindBucket(value.Codex, 10080, 1);
+            UsageBucket a5 = FindBucket(value.Claude, 300, 0);
+            UsageBucket a7 = FindBucket(value.Claude, 10080, 1);
+            if (!showCodexFiveHour)
+            {
+                return string.Format(CultureInfo.InvariantCulture,
+                    "Token Bar\nC 7d {0}\nA 5h {1} · 7d {2}",
+                    Percent(c7), Percent(a5), Percent(a7));
+            }
             return string.Format(CultureInfo.InvariantCulture,
                 "Token Bar\nC 5h {0} · 7d {1}\nA 5h {2} · 7d {3}",
                 Percent(c5), Percent(c7), Percent(a5), Percent(a7));
+        }
+
+        internal static bool ShouldShowFiveHour(string providerName,
+            bool showCodexFiveHour)
+        {
+            return !string.Equals(providerName, "Codex",
+                StringComparison.OrdinalIgnoreCase) || showCodexFiveHour;
+        }
+
+        internal static int PreferredHeight(bool showCodexFiveHour)
+        {
+            return showCodexFiveHour ? 340 : 306;
+        }
+
+        internal static Rectangle CodexCardBounds(bool showCodexFiveHour)
+        {
+            return new Rectangle(16, 60, 368, showCodexFiveHour ? 112 : 78);
+        }
+
+        internal static Rectangle ClaudeCardBounds(bool showCodexFiveHour)
+        {
+            return new Rectangle(16, showCodexFiveHour ? 182 : 148, 368, 112);
+        }
+
+        internal static int FooterTop(bool showCodexFiveHour)
+        {
+            return showCodexFiveHour ? 305 : 271;
         }
 
         private string LatestAge()
@@ -479,7 +651,7 @@ namespace TokenBar
                 CultureInfo.InvariantCulture) + "m";
         }
 
-        private static UsageBucket FindBucket(ProviderUsage provider, int windowMinutes,
+        internal static UsageBucket FindBucket(ProviderUsage provider, int windowMinutes,
             int fallbackIndex)
         {
             if (provider == null) return null;
@@ -538,7 +710,7 @@ namespace TokenBar
             return menu;
         }
 
-        private static Icon CreateTrayIcon()
+        private static Icon CreateTrayIcon(bool hasUpdate)
         {
             using (Bitmap bitmap = new Bitmap(32, 32))
             using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -559,6 +731,15 @@ namespace TokenBar
                     new Rectangle(16, 7, 13, 17), Color.FromArgb(255, 126, 51),
                     TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter |
                     TextFormatFlags.NoPadding);
+                if (hasUpdate)
+                {
+                    using (SolidBrush update = new SolidBrush(Color.FromArgb(255, 159, 67)))
+                    using (Pen updateBorder = new Pen(Color.FromArgb(255, 245, 247, 250), 1.2f))
+                    {
+                        graphics.FillEllipse(update, 23, 1, 8, 8);
+                        graphics.DrawEllipse(updateBorder, 23, 1, 8, 8);
+                    }
+                }
                 IntPtr handle = bitmap.GetHicon();
                 try
                 {

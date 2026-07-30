@@ -1,11 +1,14 @@
 [CmdletBinding()]
 param(
-    [string]$Version = ((Get-Content -LiteralPath (
-        Join-Path $PSScriptRoot 'VERSION') -Raw).Trim())
+    [string]$Version
 )
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $Version = (Get-Content -LiteralPath (
+        Join-Path $projectRoot 'VERSION') -Raw).Trim()
+}
 $tempRoot = Join-Path $projectRoot '.codex-tmp\package'
 $packageName = "Token-Bar-for-Windows-$Version"
 $stageRoot = Join-Path $tempRoot $packageName

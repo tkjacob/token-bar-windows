@@ -1,5 +1,7 @@
 [CmdletBinding()]
-param()
+param(
+    [string]$PreviewDirectory
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -22,6 +24,20 @@ $previousTmp = $env:TMP
 $env:TEMP = $testRoot
 $env:TMP = $testRoot
 $env:TOKENBAR_REGRESSION_ROOT = $runtimeRoot
+$env:TOKENBAR_PROJECT_ROOT = $projectRoot
+if (-not [string]::IsNullOrWhiteSpace($PreviewDirectory)) {
+    $previewFull = [IO.Path]::GetFullPath((
+        Join-Path $projectRoot $PreviewDirectory))
+    $temporaryBoundary = [IO.Path]::GetFullPath((
+        Join-Path $projectRoot '.codex-tmp')) +
+        [IO.Path]::DirectorySeparatorChar
+    if (-not $previewFull.StartsWith(
+        $temporaryBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "PreviewDirectory must stay under .codex-tmp: $previewFull"
+    }
+    New-Item -ItemType Directory -Force -Path $previewFull | Out-Null
+    $env:TOKENBAR_PREVIEW_DIR = $previewFull
+}
 
 $insideProcess = $null
 $siblingProcess = $null
@@ -115,6 +131,8 @@ try {
     $env:TEMP = $previousTemp
     $env:TMP = $previousTmp
     Remove-Item Env:TOKENBAR_REGRESSION_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:TOKENBAR_PROJECT_ROOT -ErrorAction SilentlyContinue
+    Remove-Item Env:TOKENBAR_PREVIEW_DIR -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $testRoot) {
         Remove-Item -LiteralPath $testRoot -Recurse -Force
     }

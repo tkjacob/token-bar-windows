@@ -21,11 +21,17 @@ namespace TokenBar
     internal sealed class AppSettings
     {
         public int ClaudeRefreshMinutes = 15;
+        public bool ShowCodexFiveHour = false;
 
         public static AppSettings Load()
         {
-            AppSettings result = new AppSettings();
             string path = Path.Combine(RuntimePaths.BaseDirectory, "tokenbar.ini");
+            return Load(path);
+        }
+
+        internal static AppSettings Load(string path)
+        {
+            AppSettings result = new AppSettings();
             if (!File.Exists(path)) return result;
 
             try
@@ -38,8 +44,19 @@ namespace TokenBar
                     int equals = line.IndexOf('=');
                     if (equals <= 0) continue;
                     string key = line.Substring(0, equals).Trim();
+                    string rawValue = line.Substring(equals + 1).Trim();
+
+                    if (key.Equals("ShowCodexFiveHour",
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        bool show;
+                        if (bool.TryParse(rawValue, out show))
+                            result.ShowCodexFiveHour = show;
+                        continue;
+                    }
+
                     int value;
-                    if (!int.TryParse(line.Substring(equals + 1).Trim(), NumberStyles.Integer,
+                    if (!int.TryParse(rawValue, NumberStyles.Integer,
                         CultureInfo.InvariantCulture, out value))
                         continue;
 
