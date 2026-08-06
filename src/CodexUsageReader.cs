@@ -16,12 +16,19 @@ namespace TokenBar
 
         public static UsageSnapshot Read(ProviderUsage claude)
         {
+            return Read(claude, null);
+        }
+
+        public static UsageSnapshot Read(ProviderUsage claude, string codexHome)
+        {
             UsageSnapshot snapshot = new UsageSnapshot();
             snapshot.Claude = claude ?? new ProviderUsage { Name = "Claude" };
 
-            string root = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".codex", "sessions");
+            string home = string.IsNullOrEmpty(codexHome)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".codex")
+                : codexHome;
+            string root = Path.Combine(home, "sessions");
             if (!Directory.Exists(root))
             {
                 snapshot.Codex.Error = "Codex 세션 폴더를 찾을 수 없습니다.";

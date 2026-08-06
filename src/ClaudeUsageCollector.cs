@@ -20,6 +20,11 @@ namespace TokenBar
 
         public static ProviderUsage Collect()
         {
+            return Collect(null);
+        }
+
+        public static ProviderUsage Collect(string claudeConfigDir)
+        {
             ProviderUsage result = new ProviderUsage { Name = "Claude", CollectedAt = DateTime.Now };
             try
             {
@@ -33,17 +38,33 @@ namespace TokenBar
                 string commandLine = command.BuildCommandLine(
                     "--settings \"{\\\"disableAllHooks\\\":true}\"");
 
+                Dictionary<string, string> environmentOverrides = null;
+                if (!string.IsNullOrEmpty(claudeConfigDir))
+                {
+                    environmentOverrides = new Dictionary<string, string>(
+                        StringComparer.OrdinalIgnoreCase);
+                    environmentOverrides["CLAUDE_CONFIG_DIR"] = claudeConfigDir;
+                }
+
                 string captured = ConPtyCapture.Run(
                     commandLine,
                     RuntimePaths.BaseDirectory,
                     new[]
                     {
                         new TimedInput(2500, "\r"),
-                        new TimedInput(1000, "/usage\r"),
+                        new TimedInput(1000, "/usage"),
+                        // The command text and Enter must land as separate
+                        // writes with a gap between them — sending them in
+                        // one burst races the slash-command autocomplete
+                        // dropdown (seen live in Claude Code v2.1.223+) and
+                        // Enter gets swallowed by the dropdown instead of
+                        // submitting, so /usage never actually runs.
+                        new TimedInput(500, "\r"),
                         new TimedInput(7000, "\x03"),
                         new TimedInput(500, "\x03")
                     },
-                    15000);
+                    15000,
+                    environmentOverrides);
 
                 ParseUsage(captured, result);
                 if (result.Buckets.Count == 0)
@@ -60,24 +81,31 @@ namespace TokenBar
         {
             string text = Normalize(raw);
 
+            // The reset-time capture is bounded (max ~60 chars) and stops at
+            // a "+50% weekly limits promo…" style banner in addition to the
+            // usual section headers — ANSI cursor-jump codes leave no space
+            // between the reset text and whatever the CLI renders right
+            // after it, so an unbounded lazy capture with an incomplete
+            // lookahead list runs all the way to the end of the captured
+            // terminal buffer and turns the whole reset time into garbage.
             Match session = Regex.Match(text,
-                @"Current\s+session.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.+?)(?=Current\s+week|All\s+models|Sonnet|Opus|Extra\s+usage|$)",
+                @"Current\s+session.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Current\s+week|All\s+models|Sonnet|Opus|Extra\s+usage|\+\d|$)",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
             if (!session.Success)
             {
                 session = Regex.Match(text,
-                    @"Current.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.+?)(?=Weekly|Week|Extra|$)",
+                    @"Current.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Weekly|Week|Extra|\+\d|$)",
                     RegexOptions.IgnoreCase | RegexOptions.Singleline);
             }
             AddMatch(result, session, "현재 세션", 300);
 
             Match week = Regex.Match(text,
-                @"(?:Current\s+week|All\s+models).*?(\d{1,3})\s*%\s*used.*?Resets\s+(.+?)(?=Sonnet|Opus|Extra\s+usage|$)",
+                @"(?:Current\s+week|All\s+models).*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Sonnet|Opus|Extra\s+usage|\+\d|$)",
                 RegexOptions.IgnoreCase | RegexOptions.Singleline);
             if (!week.Success)
             {
                 week = Regex.Match(text,
-                    @"Weekly.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.+?)(?=Extra|$)",
+                    @"Weekly.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Extra|\+\d|$)",
                     RegexOptions.IgnoreCase | RegexOptions.Singleline);
             }
             AddMatch(result, week, "주간", 10080);
@@ -106,11 +134,21 @@ namespace TokenBar
             if (string.IsNullOrEmpty(value)) return null;
             string compact = Regex.Replace(value, @"\s+", " ").Trim();
             compact = Regex.Replace(compact, @"[│╰─╭╮╯┌┐└┘]+", " ").Trim();
+            compact = StripTrailingTimeZone(compact);
+            // "4:59pm" (no space before the designator) must still match the
+            // "h:mm tt" family of exact formats below.
+            compact = Regex.Replace(compact, @"(\d)(am|pm)\b", "$1 $2",
+                RegexOptions.IgnoreCase);
             DateTime parsed;
             string[] patterns =
             {
-                "h:mm tt", "hh:mm tt", "MMM d 'at' h:mm tt",
-                "MMM d, yyyy 'at' h:mm tt", "MMMM d 'at' h:mm tt"
+                // Each pair covers both "10:00am" and the round-hour form
+                // "10am" (no minutes) — Claude's reset text uses either.
+                "h:mm tt", "hh:mm tt", "h tt", "hh tt",
+                "MMM d 'at' h:mm tt", "MMM d 'at' h tt",
+                "MMM d, yyyy 'at' h:mm tt", "MMM d, yyyy 'at' h tt",
+                "MMMM d 'at' h:mm tt", "MMMM d 'at' h tt",
+                "MMM d, h:mm tt", "MMM d, h tt"
             };
             foreach (string pattern in patterns)
             {
@@ -123,6 +161,18 @@ namespace TokenBar
                         if (candidate < DateTime.Now.AddMinutes(-2)) candidate = candidate.AddDays(1);
                         return candidate;
                     }
+                    if (pattern.IndexOf("yyyy", StringComparison.Ordinal) < 0)
+                    {
+                        // No year in the source text, so TryParseExact defaults
+                        // it to year 1 — anchor to the current year instead,
+                        // rolling forward across a Dec-to-Jan boundary the same
+                        // way the time-only branch rolls forward a day.
+                        DateTime candidate = new DateTime(DateTime.Now.Year, parsed.Month,
+                            parsed.Day, parsed.Hour, parsed.Minute, 0);
+                        if (candidate < DateTime.Now.AddMinutes(-2))
+                            candidate = candidate.AddYears(1);
+                        return candidate;
+                    }
                     return parsed;
                 }
             }
@@ -130,6 +180,18 @@ namespace TokenBar
                 DateTimeStyles.AllowWhiteSpaces, out parsed))
                 return parsed;
             return null;
+        }
+
+        private static string StripTrailingTimeZone(string value)
+        {
+            // "Resets 4:59pm (Asia/Seoul)" / "Resets 4:59pm KST" — the exact-match
+            // patterns below only know the clock/date portion, so a trailing zone
+            // name or offset must come off first or every pattern fails silently.
+            string result = Regex.Replace(value, @"\s*\([^()]*\)\s*$", "").Trim();
+            result = Regex.Replace(result,
+                @"\s+(?!(?:am|pm)\b)(?:[A-Za-z]{2,5}|GMT[+-]?\d{1,2}(?::?\d{2})?|UTC[+-]?\d{1,2}(?::?\d{2})?|[+-]\d{2}:?\d{2})$",
+                "", RegexOptions.IgnoreCase).Trim();
+            return result.Length == 0 ? value : result;
         }
 
         private static string Normalize(string raw)
@@ -270,6 +332,14 @@ namespace TokenBar
         public static string Run(string commandLine, string currentDirectory,
             IEnumerable<TimedInput> inputs, int overallTimeoutMilliseconds)
         {
+            return Run(commandLine, currentDirectory, inputs,
+                overallTimeoutMilliseconds, null);
+        }
+
+        public static string Run(string commandLine, string currentDirectory,
+            IEnumerable<TimedInput> inputs, int overallTimeoutMilliseconds,
+            IDictionary<string, string> environmentOverrides)
+        {
             Stopwatch clock = Stopwatch.StartNew();
             IntPtr inputRead = IntPtr.Zero;
             IntPtr inputWrite = IntPtr.Zero;
@@ -277,6 +347,7 @@ namespace TokenBar
             IntPtr outputWrite = IntPtr.Zero;
             IntPtr pseudoConsole = IntPtr.Zero;
             IntPtr attributeList = IntPtr.Zero;
+            IntPtr environmentBlock = IntPtr.Zero;
             ProcessInformation processInfo = new ProcessInformation();
             MemoryStream captured = new MemoryStream();
             Thread reader = null;
@@ -310,10 +381,19 @@ namespace TokenBar
                 startup.StartupInfo.cb = Marshal.SizeOf(startup);
                 startup.lpAttributeList = attributeList;
 
+                if (environmentOverrides != null && environmentOverrides.Count > 0)
+                    environmentBlock = BuildEnvironmentBlock(environmentOverrides);
+
                 StringBuilder mutableCommand = new StringBuilder(commandLine);
                 Check(CreateProcess(null, mutableCommand, IntPtr.Zero, IntPtr.Zero, false,
-                    ExtendedStartupInfoPresent | CreateUnicodeEnvironment, IntPtr.Zero,
+                    ExtendedStartupInfoPresent | CreateUnicodeEnvironment, environmentBlock,
                     currentDirectory, ref startup, out processInfo), "CreateProcess");
+
+                if (environmentBlock != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(environmentBlock);
+                    environmentBlock = IntPtr.Zero;
+                }
 
                 Close(ref inputRead);
                 Close(ref outputWrite);
@@ -382,6 +462,7 @@ namespace TokenBar
                     DeleteProcThreadAttributeList(attributeList);
                     Marshal.FreeHGlobal(attributeList);
                 }
+                if (environmentBlock != IntPtr.Zero) Marshal.FreeHGlobal(environmentBlock);
                 captured.Dispose();
             }
         }
@@ -392,6 +473,25 @@ namespace TokenBar
             long remaining = (long)overallTimeoutMilliseconds - elapsedMilliseconds;
             if (remaining <= 0) return 0;
             return remaining > int.MaxValue ? int.MaxValue : (int)remaining;
+        }
+
+        private static IntPtr BuildEnvironmentBlock(IDictionary<string, string> overrides)
+        {
+            SortedDictionary<string, string> merged = new SortedDictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+                merged[(string)entry.Key] = (string)entry.Value;
+            foreach (KeyValuePair<string, string> pair in overrides)
+                merged[pair.Key] = pair.Value;
+
+            StringBuilder block = new StringBuilder();
+            foreach (KeyValuePair<string, string> pair in merged)
+            {
+                if (string.IsNullOrEmpty(pair.Key)) continue;
+                block.Append(pair.Key).Append('=').Append(pair.Value ?? string.Empty).Append('\0');
+            }
+            block.Append('\0');
+            return Marshal.StringToHGlobalUni(block.ToString());
         }
 
         private static void Check(bool success, string operation)

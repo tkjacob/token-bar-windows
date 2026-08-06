@@ -53,5 +53,19 @@ namespace TokenBar
         public ProviderUsage Claude = new ProviderUsage { Name = "Claude" };
         public readonly List<ProviderUsage> OtherCodexLimits = new List<ProviderUsage>();
     }
+
+    internal sealed class AccountSnapshot
+    {
+        public string Label;
+        public UsageSnapshot Snapshot = new UsageSnapshot();
+
+        // Whether a credential file exists on disk for this provider, checked
+        // fresh on every refresh from AccountPaths — independent of whether
+        // that refresh's data fetch happened to succeed. This is what decides
+        // "show the card" vs. "show a connect button", so a transient fetch
+        // error never flips a genuinely connected account back to disconnected.
+        public bool ClaudeConnected;
+        public bool CodexConnected;
+    }
 }
 

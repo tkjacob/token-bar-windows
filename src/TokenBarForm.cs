@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
@@ -33,34 +34,41 @@ namespace TokenBar
         private readonly Font valueFont;
         private readonly Font smallFont;
 
-        private UsageSnapshot snapshot = new UsageSnapshot();
-        private ProviderUsage claude =
-            new ProviderUsage { Name = "Claude", Error = "갱신 중…" };
-        private bool collectingCodex;
-        private bool codexRefreshPending;
-        private bool collectingClaude;
+        private readonly List<AccountSnapshot> accountSnapshots = new List<AccountSnapshot>();
+        // Lists rather than fixed-size arrays so a full account removal
+        // (logout) can shrink these in place without needing a restart.
+        private readonly List<bool> collectingAccount = new List<bool>();
+        private readonly List<DateTime> lastAccountAttempt = new List<DateTime>();
         private bool checkingUpdates;
         private bool resourcesDisposed;
         private Icon updateIcon;
         private UpdateInfo availableUpdate;
         private DateTime lastUpdateCheckRequestUtc = DateTime.MinValue;
-        private DateTime lastClaudeAttempt = DateTime.MinValue;
         private DateTime lastAutomaticHide = DateTime.MinValue;
         private DateTime openedAt = DateTime.MinValue;
         private Rectangle refreshButton;
         private Rectangle settingsButton;
         private Rectangle updateButton;
+        private Rectangle addAccountButton;
+        private Rectangle[] logoutButtons = new Rectangle[0];
 
         public TokenBarForm(AppSettings settings)
         {
             this.settings = settings;
+            foreach (AccountConfig account in settings.Accounts)
+            {
+                accountSnapshots.Add(new AccountSnapshot { Label = account.Label });
+                collectingAccount.Add(false);
+                lastAccountAttempt.Add(DateTime.MinValue);
+            }
+
             Text = "Token Bar";
             FormBorderStyle = FormBorderStyle.None;
             ShowInTaskbar = false;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Width = 400;
-            Height = PreferredHeight(settings.ShowCodexFiveHour);
+            Height = PreferredHeight(settings.ShowCodexFiveHour, BuildAccountStates());
             MinimumSize = new Size(400, Height);
             MaximumSize = new Size(400, Height);
             BackColor = Color.FromArgb(29, 31, 35);
@@ -187,25 +195,93 @@ namespace TokenBar
 
             bool showCodexFiveHour = ShouldShowFiveHour(
                 "Codex", settings.ShowCodexFiveHour);
-            Rectangle codexCard = CodexCardBounds(showCodexFiveHour);
-            Rectangle claudeCard = ClaudeCardBounds(showCodexFiveHour);
-            int footerTop = FooterTop(showCodexFiveHour);
-            DrawProviderCard(e.Graphics, codexCard,
-                "Codex", snapshot.Codex, Color.FromArgb(70, 139, 255),
-                showCodexFiveHour);
-            DrawProviderCard(e.Graphics, claudeCard,
-                "Claude", snapshot.Claude, Color.FromArgb(255, 126, 51), true);
+            List<AccountState> states = BuildAccountStates();
+            int footerTop = FooterTop(showCodexFiveHour, states);
 
+            Size addSize = TextRenderer.MeasureText(e.Graphics, "+ 계정 추가", valueFont);
+            addAccountButton = new Rectangle(16 + 368 - addSize.Width, TopMargin,
+                addSize.Width, AddAccountRowHeight);
+            TextRenderer.DrawText(e.Graphics, "+ 계정 추가", valueFont, addAccountButton,
+                Color.FromArgb(70, 139, 255),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding);
+
+            logoutButtons = new Rectangle[accountSnapshots.Count];
+
+            if (accountSnapshots.Count == 0)
+            {
+                DrawEmptyState(e.Graphics, ContentTop);
+            }
+            else
+            {
+                for (int i = 0; i < accountSnapshots.Count; i++)
+                {
+                    AccountSnapshot account = accountSnapshots[i];
+                    AccountState state = states[i];
+                    bool loading = collectingAccount[i];
+                    int labelTop = AccountLabelTop(i, showCodexFiveHour, states);
+                    DrawAccountLabelRow(e.Graphics, i, labelTop, account.Label);
+
+                    // A provider that isn't connected simply isn't drawn — no
+                    // placeholder row, no dead-end button. The only way in is
+                    // "+ 계정 추가" above, which merges into this account
+                    // automatically when the same email is entered again.
+                    if (state.CodexConnected)
+                        DrawProviderCard(e.Graphics,
+                            AccountCodexSlotBounds(i, showCodexFiveHour, states),
+                            "Codex", account.Snapshot.Codex, Color.FromArgb(70, 139, 255),
+                            showCodexFiveHour, loading);
+                    if (state.ClaudeConnected)
+                        DrawProviderCard(e.Graphics,
+                            AccountClaudeSlotBounds(i, showCodexFiveHour, states),
+                            "Claude", account.Snapshot.Claude, Color.FromArgb(255, 126, 51), true,
+                            loading);
+                }
+            }
+
+            bool anyCollecting = collectingAccount.Exists(delegate(bool c) { return c; });
             string updated = "Updated " + LatestAge();
-            if (collectingClaude) updated += " · Claude 새로고침 중";
+            if (anyCollecting) updated += " · 새로고침 중";
             TextRenderer.DrawText(e.Graphics, updated, smallFont,
                 new Rectangle(22, footerTop, 350, 22), Color.FromArgb(170, 178, 188),
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
 
+        private void DrawAccountLabelRow(Graphics graphics, int index, int top, string label)
+        {
+            TextRenderer.DrawText(graphics, label, providerFont,
+                new Rectangle(16, top, 300, 22), Color.FromArgb(200, 205, 212),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+
+            Rectangle logout = new Rectangle(316, top, 68, 22);
+            TextRenderer.DrawText(graphics, "계정 삭제", smallFont, logout,
+                Color.FromArgb(150, 158, 168),
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.NoPadding);
+            logoutButtons[index] = logout;
+        }
+
+        private void DrawEmptyState(Graphics graphics, int top)
+        {
+            Rectangle area = new Rectangle(16, top, 368, EmptyStateHeight);
+            using (GraphicsPath path = RoundedRectangle(area, 12))
+            using (SolidBrush background = new SolidBrush(Color.FromArgb(115, 20, 22, 26)))
+            using (Pen border = new Pen(Color.FromArgb(45, 150, 156, 166)))
+            {
+                graphics.FillPath(background, path);
+                graphics.DrawPath(border, path);
+            }
+            TextRenderer.DrawText(graphics, "연결된 계정이 없습니다. 위 \"+ 계정 추가\"로 시작하세요.",
+                smallFont, new Rectangle(area.Left + 16, area.Top, area.Width - 32, area.Height),
+                Color.FromArgb(170, 178, 188),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                TextFormatFlags.WordBreak | TextFormatFlags.NoPadding);
+        }
+
         private void DrawProviderCard(Graphics graphics, Rectangle area, string name,
-            ProviderUsage provider, Color accent, bool showFiveHour)
+            ProviderUsage provider, Color accent, bool showFiveHour, bool loading)
         {
             using (GraphicsPath path = RoundedRectangle(area, 12))
             using (SolidBrush background = new SolidBrush(Color.FromArgb(115, 20, 22, 26)))
@@ -221,6 +297,18 @@ namespace TokenBar
                 new Rectangle(area.Left + 34, area.Top + 8, 150, 26), accent,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.NoPadding);
+
+            if (provider == null || provider.Buckets.Count == 0)
+            {
+                TextRenderer.DrawText(graphics, loading ? "불러오는 중..." : "사용량 정보 없음",
+                    smallFont,
+                    new Rectangle(area.Left + 16, area.Top + 39, area.Width - 32,
+                        area.Height - 47),
+                    Color.FromArgb(140, 148, 158),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPadding);
+                return;
+            }
 
             UsageBucket fiveHour = FindBucket(provider, 300, 0);
             UsageBucket weekly = FindBucket(provider, 10080, 1);
@@ -353,20 +441,88 @@ namespace TokenBar
         {
             if (e.Button != MouseButtons.Left) return;
             if (updateButton.Contains(e.Location))
+            {
                 OpenAvailableUpdate();
-            else if (refreshButton.Contains(e.Location))
+                return;
+            }
+            if (refreshButton.Contains(e.Location))
+            {
                 RefreshAll(true);
-            else if (settingsButton.Contains(e.Location))
+                return;
+            }
+            if (settingsButton.Contains(e.Location))
+            {
                 trayMenu.Show(this, new Point(settingsButton.Right,
                     settingsButton.Bottom));
+                return;
+            }
+            if (addAccountButton.Contains(e.Location))
+            {
+                ShowAddAccountDialog();
+                return;
+            }
+            for (int i = 0; i < logoutButtons.Length; i++)
+            {
+                if (logoutButtons[i].Contains(e.Location))
+                {
+                    ConfirmLogout(i);
+                    return;
+                }
+            }
         }
 
         private void OnFlyoutMouseMove(object sender, MouseEventArgs e)
         {
-            Cursor = updateButton.Contains(e.Location) ||
+            bool hand = updateButton.Contains(e.Location) ||
                 refreshButton.Contains(e.Location) ||
-                settingsButton.Contains(e.Location)
-                ? Cursors.Hand : Cursors.Default;
+                settingsButton.Contains(e.Location) ||
+                addAccountButton.Contains(e.Location);
+            if (!hand)
+            {
+                for (int i = 0; i < logoutButtons.Length && !hand; i++)
+                    hand = logoutButtons[i].Contains(e.Location);
+            }
+            Cursor = hand ? Cursors.Hand : Cursors.Default;
+        }
+
+        // "로그아웃" removes the account entirely — credentials, ini entry,
+        // and its row in the list. Kept as a live in-place removal (not a
+        // restart-requiring one) by using Lists instead of fixed arrays for
+        // all the per-account tracking state, so indices stay aligned.
+        private void ConfirmLogout(int index)
+        {
+            AccountConfig config = settings.Accounts[index];
+            DialogResult result = MessageBox.Show(
+                "\"" + config.Label + "\" 계정을 삭제할까요? " +
+                "이 계정의 로그인 정보와 목록에서의 항목이 모두 삭제됩니다.",
+                "Token Bar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (result != DialogResult.Yes) return;
+
+            try
+            {
+                string claudeDir = AccountPaths.ClaudeDir(config.Id);
+                string codexDir = AccountPaths.CodexDir(config.Id);
+                if (Directory.Exists(claudeDir)) Directory.Delete(claudeDir, true);
+                if (Directory.Exists(codexDir)) Directory.Delete(codexDir, true);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Token Bar", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+
+            try { AppSettings.RemoveAccount(AccountSetupForm.IniPath(), config.Id); }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Token Bar", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+
+            settings.Accounts.RemoveAt(index);
+            accountSnapshots.RemoveAt(index);
+            collectingAccount.RemoveAt(index);
+            lastAccountAttempt.RemoveAt(index);
+            ResizeAndRedraw();
         }
 
         private void ShowFlyout()
@@ -422,33 +578,79 @@ namespace TokenBar
             Location = new Point(x, y);
         }
 
-        private void RefreshAll(bool forceClaude)
+        private void RefreshAll(bool force)
         {
-            RequestCodexRefresh();
             RequestUpdateCheck();
+            for (int i = 0; i < settings.Accounts.Count; i++)
+                RequestAccountRefresh(i, force);
+        }
 
-            TimeSpan age = DateTime.Now - lastClaudeAttempt;
-            if (!collectingClaude &&
-                (forceClaude || lastClaudeAttempt == DateTime.MinValue ||
-                 age.TotalMinutes >= settings.ClaudeRefreshMinutes))
+        private void RequestAccountRefresh(int index, bool force)
+        {
+            if (collectingAccount[index]) return;
+            TimeSpan age = DateTime.Now - lastAccountAttempt[index];
+            if (!force && lastAccountAttempt[index] != DateTime.MinValue &&
+                age.TotalMinutes < settings.ClaudeRefreshMinutes)
+                return;
+
+            collectingAccount[index] = true;
+            lastAccountAttempt[index] = DateTime.Now;
+            Invalidate();
+            AccountConfig account = settings.Accounts[index];
+            string claudeDir = AccountPaths.ClaudeDir(account.Id);
+            string codexDir = AccountPaths.CodexDir(account.Id);
+            ThreadPool.QueueUserWorkItem(delegate
             {
-                collectingClaude = true;
-                lastClaudeAttempt = DateTime.Now;
-                ThreadPool.QueueUserWorkItem(delegate
+                // Re-check the credential folders fresh from disk every time,
+                // rather than trusting cached state — this is the only source
+                // of truth for "connected", so it can never drift.
+                bool hasClaude = HasClaudeCredential(claudeDir);
+                bool hasCodex = HasCodexCredential(codexDir);
+                ProviderUsage accountClaude = hasClaude
+                    ? ClaudeUsageCollector.Collect(claudeDir)
+                    : new ProviderUsage { Name = "Claude" };
+                UsageSnapshot updated = hasCodex
+                    ? CodexUsageReader.Read(accountClaude, codexDir)
+                    : new UsageSnapshot { Claude = accountClaude };
+                try
                 {
-                    ProviderUsage updated = ClaudeUsageCollector.Collect();
-                    try
+                    BeginInvoke((MethodInvoker)delegate
                     {
-                        BeginInvoke((MethodInvoker)delegate
-                        {
-                            claude = updated;
-                            collectingClaude = false;
-                            RequestCodexRefresh();
-                        });
-                    }
-                    catch { collectingClaude = false; }
-                });
-            }
+                        // A transient fetch failure (CLI timeout, slow start
+                        // right after login, etc.) must not erase the last
+                        // good values — only replace a provider's data when
+                        // the new fetch actually returned something.
+                        UsageSnapshot previous = accountSnapshots[index].Snapshot;
+                        if (hasClaude && updated.Claude.Buckets.Count == 0 &&
+                            previous.Claude.Buckets.Count > 0)
+                            updated.Claude = previous.Claude;
+                        if (hasCodex && updated.Codex.Buckets.Count == 0 &&
+                            previous.Codex.Buckets.Count > 0)
+                            updated.Codex = previous.Codex;
+
+                        accountSnapshots[index].Snapshot = updated;
+                        accountSnapshots[index].ClaudeConnected = hasClaude;
+                        accountSnapshots[index].CodexConnected = hasCodex;
+                        collectingAccount[index] = false;
+                        ResizeAndRedraw();
+                    });
+                }
+                catch { collectingAccount[index] = false; }
+            });
+        }
+
+        // Different Claude CLI versions have stored the live session under
+        // different filenames (.credentials.json historically, .claude.json
+        // more recently) — check both rather than assuming one.
+        internal static bool HasClaudeCredential(string dir)
+        {
+            return File.Exists(Path.Combine(dir, ".credentials.json")) ||
+                File.Exists(Path.Combine(dir, ".claude.json"));
+        }
+
+        internal static bool HasCodexCredential(string dir)
+        {
+            return File.Exists(Path.Combine(dir, "auth.json"));
         }
 
         private void RequestUpdateCheck()
@@ -527,67 +729,62 @@ namespace TokenBar
             catch { }
         }
 
-        private void RequestCodexRefresh()
+        private List<AccountState> BuildAccountStates()
         {
-            if (collectingCodex)
+            List<AccountState> states = new List<AccountState>(accountSnapshots.Count);
+            for (int i = 0; i < accountSnapshots.Count; i++)
             {
-                codexRefreshPending = true;
-                return;
+                AccountSnapshot snap = accountSnapshots[i];
+                states.Add(new AccountState(snap.ClaudeConnected, snap.CodexConnected));
             }
+            return states;
+        }
 
-            collectingCodex = true;
-            ProviderUsage claudeAtStart = claude;
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                UsageSnapshot updated = CodexUsageReader.Read(claudeAtStart);
-                try
-                {
-                    BeginInvoke((MethodInvoker)delegate
-                    {
-                        snapshot = updated;
-                        collectingCodex = false;
-                        UpdatePresentation();
-                        if (codexRefreshPending)
-                        {
-                            codexRefreshPending = false;
-                            RequestCodexRefresh();
-                        }
-                    });
-                }
-                catch { collectingCodex = false; }
-            });
+        private void ApplyHeight(int height)
+        {
+            MinimumSize = new Size(400, 0);
+            MaximumSize = new Size(400, short.MaxValue);
+            Height = height;
+            MinimumSize = new Size(400, height);
+            MaximumSize = new Size(400, height);
+        }
+
+        private void ResizeAndRedraw()
+        {
+            ApplyHeight(PreferredHeight(settings.ShowCodexFiveHour, BuildAccountStates()));
+            if (Visible) PositionAboveNotificationArea();
+            ApplyRoundedRegion();
+            UpdatePresentation();
         }
 
         private void UpdatePresentation()
         {
             Invalidate();
-            string tooltip = BuildTrayTooltip();
+            string tooltip = BuildTrayTooltip(accountSnapshots);
             try { trayIcon.Text = tooltip.Length > 63 ?
                 tooltip.Substring(0, 63) : tooltip; }
             catch (ArgumentException) { trayIcon.Text = "Token Bar"; }
         }
 
-        private string BuildTrayTooltip()
+        internal static string BuildTrayTooltip(IList<AccountSnapshot> accounts)
         {
-            return BuildTrayTooltip(snapshot, settings.ShowCodexFiveHour);
+            if (accounts.Count == 0) return "Token Bar\n계정이 없습니다";
+            StringBuilder tooltip = new StringBuilder("Token Bar");
+            foreach (AccountSnapshot account in accounts)
+            {
+                tooltip.Append("\n").Append(account.Label).Append(" ")
+                    .Append(Percent(AccountMinRemaining(account.Snapshot)));
+            }
+            return tooltip.ToString();
         }
 
-        internal static string BuildTrayTooltip(UsageSnapshot value,
-            bool showCodexFiveHour)
+        private static double? AccountMinRemaining(UsageSnapshot snapshot)
         {
-            UsageBucket c5 = FindBucket(value.Codex, 300, 0);
-            UsageBucket c7 = FindBucket(value.Codex, 10080, 1);
-            UsageBucket a5 = FindBucket(value.Claude, 300, 0);
-            UsageBucket a7 = FindBucket(value.Claude, 10080, 1);
-            if (!showCodexFiveHour)
-            {
-                return string.Format(CultureInfo.InvariantCulture,
-                    "Token Bar\nC 7d {0}\nA 5h {1} · 7d {2}",
-                    Percent(c7), Percent(a5), Percent(a7));
-            }
-            return string.Format(CultureInfo.InvariantCulture,
-                "Token Bar\nC 5h {0} · 7d {1}\nA 5h {2} · 7d {3}",
-                Percent(c5), Percent(c7), Percent(a5), Percent(a7));
+            double? codex = snapshot.Codex == null ? null : snapshot.Codex.RemainingPercent;
+            double? claude = snapshot.Claude == null ? null : snapshot.Claude.RemainingPercent;
+            if (!codex.HasValue) return claude;
+            if (!claude.HasValue) return codex;
+            return Math.Min(codex.Value, claude.Value);
         }
 
         internal static bool ShouldShowFiveHour(string providerName,
@@ -597,42 +794,108 @@ namespace TokenBar
                 StringComparison.OrdinalIgnoreCase) || showCodexFiveHour;
         }
 
-        internal static int PreferredHeight(bool showCodexFiveHour)
+        // A disconnected provider is never drawn at all — no placeholder,
+        // no dead-end button. The only entry point is the persistent
+        // "+ 계정 추가" row, which merges into an existing account whenever
+        // the same email is entered again.
+        internal struct AccountState
         {
-            return showCodexFiveHour ? 340 : 306;
+            public readonly bool ClaudeConnected;
+            public readonly bool CodexConnected;
+
+            public AccountState(bool claudeConnected, bool codexConnected)
+            {
+                ClaudeConnected = claudeConnected;
+                CodexConnected = codexConnected;
+            }
         }
 
-        internal static Rectangle CodexCardBounds(bool showCodexFiveHour)
+        internal const int TopMargin = 60;
+        internal const int AddAccountRowHeight = 22;
+        internal const int AccountLabelHeight = 32;
+        internal const int AccountGap = 14;
+        internal const int ContentTop = TopMargin + AddAccountRowHeight + AccountGap;
+        internal const int ClaudeCardHeight = 112;
+        internal const int EmptyStateHeight = 40;
+
+        private static int CodexCardHeight(bool showCodexFiveHour)
         {
-            return new Rectangle(16, 60, 368, showCodexFiveHour ? 112 : 78);
+            return showCodexFiveHour ? 112 : 78;
         }
 
-        internal static Rectangle ClaudeCardBounds(bool showCodexFiveHour)
+        internal static int AccountContentHeight(AccountState state, bool showCodexFiveHour)
         {
-            return new Rectangle(16, showCodexFiveHour ? 182 : 148, 368, 112);
+            int height = 0;
+            if (state.CodexConnected) height += CodexCardHeight(showCodexFiveHour);
+            if (state.ClaudeConnected)
+                height += (state.CodexConnected ? 10 : 0) + ClaudeCardHeight;
+            return height;
         }
 
-        internal static int FooterTop(bool showCodexFiveHour)
+        internal static int AccountBlockHeight(AccountState state, bool showCodexFiveHour)
         {
-            return showCodexFiveHour ? 305 : 271;
+            return AccountLabelHeight + AccountContentHeight(state, showCodexFiveHour) + AccountGap;
+        }
+
+        internal static int AccountLabelTop(int index, bool showCodexFiveHour,
+            IList<AccountState> accounts)
+        {
+            int top = ContentTop;
+            for (int i = 0; i < index; i++)
+                top += AccountBlockHeight(accounts[i], showCodexFiveHour);
+            return top;
+        }
+
+        internal static Rectangle AccountCodexSlotBounds(int index, bool showCodexFiveHour,
+            IList<AccountState> accounts)
+        {
+            int top = AccountLabelTop(index, showCodexFiveHour, accounts) + AccountLabelHeight;
+            return new Rectangle(16, top, 368, CodexCardHeight(showCodexFiveHour));
+        }
+
+        internal static Rectangle AccountClaudeSlotBounds(int index, bool showCodexFiveHour,
+            IList<AccountState> accounts)
+        {
+            int top = AccountLabelTop(index, showCodexFiveHour, accounts) + AccountLabelHeight;
+            if (accounts[index].CodexConnected)
+                top += CodexCardHeight(showCodexFiveHour) + 10;
+            return new Rectangle(16, top, 368, ClaudeCardHeight);
+        }
+
+        internal static int FooterTop(bool showCodexFiveHour, IList<AccountState> accounts)
+        {
+            if (accounts.Count == 0) return ContentTop + EmptyStateHeight + AccountGap;
+            int y = ContentTop;
+            for (int i = 0; i < accounts.Count; i++)
+                y += AccountBlockHeight(accounts[i], showCodexFiveHour);
+            return y;
+        }
+
+        internal static int PreferredHeight(bool showCodexFiveHour, IList<AccountState> accounts)
+        {
+            return FooterTop(showCodexFiveHour, accounts) + 35;
         }
 
         private string LatestAge()
         {
             DateTime latest = DateTime.MinValue;
-            if (snapshot.Codex != null && snapshot.Codex.CollectedAt.HasValue)
-                latest = snapshot.Codex.CollectedAt.Value;
-            if (snapshot.Claude != null && snapshot.Claude.CollectedAt.HasValue &&
-                snapshot.Claude.CollectedAt.Value > latest)
-                latest = snapshot.Claude.CollectedAt.Value;
+            foreach (AccountSnapshot account in accountSnapshots)
+            {
+                UsageSnapshot snap = account.Snapshot;
+                if (snap.Codex != null && snap.Codex.CollectedAt.HasValue &&
+                    snap.Codex.CollectedAt.Value > latest)
+                    latest = snap.Codex.CollectedAt.Value;
+                if (snap.Claude != null && snap.Claude.CollectedAt.HasValue &&
+                    snap.Claude.CollectedAt.Value > latest)
+                    latest = snap.Claude.CollectedAt.Value;
+            }
             return latest == DateTime.MinValue ? "just now" : RelativeAge(latest);
         }
 
-        private static string Percent(UsageBucket bucket)
+        private static string Percent(double? remaining)
         {
-            return bucket != null && bucket.RemainingPercent.HasValue
-                ? Math.Round(bucket.RemainingPercent.Value).ToString("0",
-                    CultureInfo.InvariantCulture) + "%"
+            return remaining.HasValue
+                ? Math.Round(remaining.Value).ToString("0", CultureInfo.InvariantCulture) + "%"
                 : "--";
         }
 
@@ -706,8 +969,76 @@ namespace TokenBar
             };
             menu.Items.Add(startup);
             menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add("계정 추가...", null, delegate { ShowAddAccountDialog(); });
+            menu.Items.Add("계정 설정 파일 열기", null, delegate { OpenSettingsFile(); });
+            menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("끝내기", null, delegate { Close(); });
             return menu;
+        }
+
+        // Adding an account never needs a restart: a merge (same email,
+        // second provider) only touches an id already tracked in memory,
+        // and a genuinely new id just grows the same Lists ConfirmLogout
+        // already knows how to shrink.
+        private void ShowAddAccountDialog()
+        {
+            using (AccountSetupForm dialog = new AccountSetupForm())
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+            }
+
+            AppSettings reloaded = AppSettings.Load(AccountSetupForm.IniPath());
+            foreach (AccountConfig account in reloaded.Accounts)
+            {
+                int existingIndex = settings.Accounts.FindIndex(
+                    delegate(AccountConfig a) { return a.Id == account.Id; });
+                if (existingIndex >= 0)
+                {
+                    settings.Accounts[existingIndex].Label = account.Label;
+                    accountSnapshots[existingIndex].Label = account.Label;
+                    continue;
+                }
+                settings.Accounts.Add(account);
+                accountSnapshots.Add(new AccountSnapshot { Label = account.Label });
+                collectingAccount.Add(false);
+                lastAccountAttempt.Add(DateTime.MinValue);
+            }
+
+            RefreshAll(true);
+            ResizeAndRedraw();
+        }
+
+        private static void OpenSettingsFile()
+        {
+            string path = Path.Combine(RuntimePaths.BaseDirectory, "tokenbar.ini");
+            try
+            {
+                if (!File.Exists(path))
+                {
+                    File.WriteAllText(path,
+                        "# Token Bar settings\r\n" +
+                        "# ClaudeRefreshMinutes=15\r\n" +
+                        "# ShowCodexFiveHour=false\r\n" +
+                        "#\r\n" +
+                        "# 계정은 트레이 메뉴의 \"계정 추가...\"로 등록하세요 — 이름과 로그인만\r\n" +
+                        "# 하면 아래 두 줄이 자동으로 추가됩니다. 계정 폴더 경로는 직접 적을\r\n" +
+                        "# 필요 없이 계정 이름에서 자동으로 정해집니다.\r\n" +
+                        "# Accounts=company\r\n" +
+                        "# Account.company.Label=회사 계정\r\n",
+                        Encoding.UTF8);
+                }
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "notepad.exe",
+                    Arguments = "\"" + path + "\"",
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Token Bar", MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
         }
 
         private static Icon CreateTrayIcon(bool hasUpdate)
