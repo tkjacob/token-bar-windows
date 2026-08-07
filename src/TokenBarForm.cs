@@ -636,15 +636,13 @@ namespace TokenBar
                     {
                         // A transient fetch failure (CLI timeout, slow start
                         // right after login, etc.) must not erase the last
-                        // good values — only replace a provider's data when
-                        // the new fetch actually returned something.
+                        // good values. This is done per bucket (5h vs 7d),
+                        // not per provider — a fetch that got the 5h bucket
+                        // but missed the 7d one must not also wipe out the
+                        // 7d bucket that was already known.
                         UsageSnapshot previous = accountSnapshots[index].Snapshot;
-                        if (hasClaude && updated.Claude.Buckets.Count == 0 &&
-                            previous.Claude.Buckets.Count > 0)
-                            updated.Claude = previous.Claude;
-                        if (hasCodex && updated.Codex.Buckets.Count == 0 &&
-                            previous.Codex.Buckets.Count > 0)
-                            updated.Codex = previous.Codex;
+                        if (hasClaude) PreserveMissingBuckets(updated.Claude, previous.Claude);
+                        if (hasCodex) PreserveMissingBuckets(updated.Codex, previous.Codex);
 
                         accountSnapshots[index].Snapshot = updated;
                         accountSnapshots[index].ClaudeConnected = hasClaude;
@@ -656,6 +654,23 @@ namespace TokenBar
                 }
                 catch { collectingAccount[index] = false; }
             });
+        }
+
+        // Backfills any bucket kind (matched by WindowMinutes) that
+        // `previous` had but `updated` is missing, so a fetch that only
+        // partially succeeds keeps whatever it did get instead of that
+        // getting discarded alongside the part that failed.
+        internal static void PreserveMissingBuckets(ProviderUsage updated, ProviderUsage previous)
+        {
+            foreach (UsageBucket old in previous.Buckets)
+            {
+                bool covered = false;
+                foreach (UsageBucket fresh in updated.Buckets)
+                {
+                    if (fresh.WindowMinutes == old.WindowMinutes) { covered = true; break; }
+                }
+                if (!covered) updated.Buckets.Add(old);
+            }
         }
 
         // Different Claude CLI versions have stored the live session under

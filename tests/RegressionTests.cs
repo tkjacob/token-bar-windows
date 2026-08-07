@@ -47,6 +47,7 @@ namespace TokenBar.Tests
                 TestAccounts(Path.Combine(root, "accounts"));
                 TestAccountSetupHelpers(Path.Combine(root, "account-setup"));
                 TestAccountCredentialDetection(Path.Combine(root, "account-credentials"));
+                TestPreserveMissingBuckets();
                 TestUsageCache(Path.Combine(root, "usage-cache"));
                 TestUpdateChecker(Path.Combine(root, "updates"));
                 TestUpdateCheckIsAsynchronous();
@@ -541,6 +542,37 @@ namespace TokenBar.Tests
                 "A present auth.json must be recognized as connected.");
 
             Console.WriteLine("Account credential detection tests passed.");
+        }
+
+        private static void TestPreserveMissingBuckets()
+        {
+            ProviderUsage previous = new ProviderUsage { Name = "Claude" };
+            previous.Buckets.Add(new UsageBucket { Label = "현재 세션", UsedPercent = 41, WindowMinutes = 300 });
+            previous.Buckets.Add(new UsageBucket { Label = "주간", UsedPercent = 16, WindowMinutes = 10080 });
+
+            // A fetch that only got the 5h bucket must not lose the
+            // previously-known 7d bucket.
+            ProviderUsage partial = new ProviderUsage { Name = "Claude" };
+            partial.Buckets.Add(new UsageBucket { Label = "현재 세션", UsedPercent = 50, WindowMinutes = 300 });
+            TokenBarForm.PreserveMissingBuckets(partial, previous);
+            Assert(partial.Buckets.Count == 2,
+                "A partially-successful fetch must keep its fresh bucket and backfill the missing one.");
+            Assert(partial.Buckets[0].UsedPercent == 50,
+                "The fresh 5h bucket must not be overwritten by the stale one.");
+            Assert(partial.Buckets[1].UsedPercent == 16 && partial.Buckets[1].WindowMinutes == 10080,
+                "The missing 7d bucket must be backfilled from the previous snapshot.");
+
+            // A fetch that got both bucket kinds fresh must not pull in
+            // anything stale.
+            ProviderUsage complete = new ProviderUsage { Name = "Claude" };
+            complete.Buckets.Add(new UsageBucket { Label = "현재 세션", UsedPercent = 55, WindowMinutes = 300 });
+            complete.Buckets.Add(new UsageBucket { Label = "주간", UsedPercent = 22, WindowMinutes = 10080 });
+            TokenBarForm.PreserveMissingBuckets(complete, previous);
+            Assert(complete.Buckets.Count == 2 &&
+                complete.Buckets[0].UsedPercent == 55 && complete.Buckets[1].UsedPercent == 22,
+                "A fully-successful fetch must not be altered by backfilling.");
+
+            Console.WriteLine("Preserve-missing-buckets tests passed.");
         }
 
         private static void TestUsageCache(string root)

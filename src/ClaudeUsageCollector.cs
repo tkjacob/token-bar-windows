@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32.SafeHandles;
 
 namespace TokenBar
@@ -26,7 +27,19 @@ namespace TokenBar
         // back empty at once. Serializing just the Claude portion (Codex is
         // cheap local file reads, left concurrent) fixes that at the cost of
         // accounts finishing one after another instead of all at once.
-        private static readonly object CollectLock = new object();
+        private static readonly SemaphoreSlim CollectLock = new SemaphoreSlim(1, 1);
+
+        // ConPtyCapture.Run has its own internal 15s budget, but that budget
+        // assumes CreateProcess and the Win32 waits it depends on behave —
+        // if something outside that (antivirus/App Control intercepting the
+        // child process launch, for example) blocks those calls themselves,
+        // the internal budget never gets a chance to fire. Observed in
+        // practice: one account's fetch hung indefinitely and, because
+        // every account now shares one lock, permanently starved every
+        // other account's refresh. This hard deadline guarantees the lock
+        // is always released even if the work underneath never returns —
+        // the abandoned attempt is left to finish (or not) on its own.
+        private const int HardTimeoutMilliseconds = 20000;
 
         public static ProviderUsage Collect()
         {
@@ -35,9 +48,23 @@ namespace TokenBar
 
         public static ProviderUsage Collect(string claudeConfigDir)
         {
-            lock (CollectLock)
+            if (!CollectLock.Wait(HardTimeoutMilliseconds))
             {
-                return CollectLocked(claudeConfigDir);
+                return new ProviderUsage { Name = "Claude", CollectedAt = DateTime.Now,
+                    Error = "다른 계정 조회가 밀려서 건너뛰었습니다." };
+            }
+            try
+            {
+                Task<ProviderUsage> task = Task.Run(
+                    delegate { return CollectLocked(claudeConfigDir); });
+                if (task.Wait(HardTimeoutMilliseconds))
+                    return task.Result;
+                return new ProviderUsage { Name = "Claude", CollectedAt = DateTime.Now,
+                    Error = "Claude 조회 시간이 초과되었습니다." };
+            }
+            finally
+            {
+                CollectLock.Release();
             }
         }
 
