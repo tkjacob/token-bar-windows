@@ -57,7 +57,15 @@ namespace TokenBar
             this.settings = settings;
             foreach (AccountConfig account in settings.Accounts)
             {
-                accountSnapshots.Add(new AccountSnapshot { Label = account.Label });
+                AccountSnapshot snapshot = new AccountSnapshot { Label = account.Label };
+                // Restore the last successfully collected values from disk so a
+                // restart doesn't blank the display — the connected flags are
+                // still re-checked fresh below, independent of the cache.
+                UsageSnapshot cached = UsageCache.Load(AccountPaths.CacheFile(account.Id));
+                if (cached != null) snapshot.Snapshot = cached;
+                snapshot.ClaudeConnected = HasClaudeCredential(AccountPaths.ClaudeDir(account.Id));
+                snapshot.CodexConnected = HasCodexCredential(AccountPaths.CodexDir(account.Id));
+                accountSnapshots.Add(snapshot);
                 collectingAccount.Add(false);
                 lastAccountAttempt.Add(DateTime.MinValue);
             }
@@ -298,6 +306,13 @@ namespace TokenBar
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter |
                 TextFormatFlags.NoPadding);
 
+            if (provider != null && provider.CollectedAt.HasValue)
+                TextRenderer.DrawText(graphics, RelativeAge(provider.CollectedAt.Value),
+                    smallFont, new Rectangle(area.Right - 100, area.Top + 8, 84, 26),
+                    Color.FromArgb(130, 138, 148),
+                    TextFormatFlags.Right | TextFormatFlags.VerticalCenter |
+                    TextFormatFlags.NoPadding);
+
             if (provider == null || provider.Buckets.Count == 0)
             {
                 TextRenderer.DrawText(graphics, loading ? "불러오는 중..." : "사용량 정보 없음",
@@ -500,10 +515,13 @@ namespace TokenBar
 
             try
             {
-                string claudeDir = AccountPaths.ClaudeDir(config.Id);
-                string codexDir = AccountPaths.CodexDir(config.Id);
-                if (Directory.Exists(claudeDir)) Directory.Delete(claudeDir, true);
-                if (Directory.Exists(codexDir)) Directory.Delete(codexDir, true);
+                // Delete the whole account folder (claude/, codex/, and
+                // cache.json together) rather than the two provider
+                // subfolders individually — otherwise cache.json survives
+                // and a re-added account with the same email would inherit
+                // stale cached usage numbers.
+                string accountDir = Path.Combine(AccountPaths.Root(), config.Id);
+                if (Directory.Exists(accountDir)) Directory.Delete(accountDir, true);
             }
             catch (Exception ex)
             {
@@ -632,6 +650,7 @@ namespace TokenBar
                         accountSnapshots[index].ClaudeConnected = hasClaude;
                         accountSnapshots[index].CodexConnected = hasCodex;
                         collectingAccount[index] = false;
+                        UsageCache.Save(AccountPaths.CacheFile(account.Id), updated);
                         ResizeAndRedraw();
                     });
                 }

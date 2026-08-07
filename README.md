@@ -4,7 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.4-blue)
+![Version](https://img.shields.io/badge/version-1.0.5-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -156,6 +156,13 @@ Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤�
 `api.github.com/repos/tkjacob/token-bar-windows/releases/latest`의 공개 Release
 메타데이터만 인증 없이 조회합니다. Codex·Claude 사용량이나 사용자 식별정보는 전송하지
 않으며, 사용자의 클릭 없이 파일을 다운로드하거나 설치하지 않습니다.
+
+## v1.0.5
+
+- 계정별 마지막 사용량 값을 디스크에 저장합니다. 앱을 껐다 켜거나 일시적으로 연동이
+  실패해도 마지막으로 확인된 값과 "몇 분 전" 갱신 시각이 계속 표시됩니다.
+- 계정 카드에 마지막 연동 시각을 표시합니다.
+- 계정 삭제 시 캐시된 값도 함께 삭제해 재추가 시 옛 값이 남지 않습니다.
 
 ## v1.0.4
 

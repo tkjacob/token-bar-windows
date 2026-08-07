@@ -46,6 +46,7 @@ namespace TokenBar.Tests
                 TestAccounts(Path.Combine(root, "accounts"));
                 TestAccountSetupHelpers(Path.Combine(root, "account-setup"));
                 TestAccountCredentialDetection(Path.Combine(root, "account-credentials"));
+                TestUsageCache(Path.Combine(root, "usage-cache"));
                 TestUpdateChecker(Path.Combine(root, "updates"));
                 TestUpdateCheckIsAsynchronous();
                 if (string.Equals(Environment.GetEnvironmentVariable(
@@ -505,6 +506,40 @@ namespace TokenBar.Tests
                 "A present auth.json must be recognized as connected.");
 
             Console.WriteLine("Account credential detection tests passed.");
+        }
+
+        private static void TestUsageCache(string root)
+        {
+            Directory.CreateDirectory(root);
+            string cachePath = Path.Combine(root, "nested", "cache.json");
+
+            UsageSnapshot original = new UsageSnapshot();
+            original.Claude = new ProviderUsage { Name = "Claude", CollectedAt = new DateTime(2026, 8, 7, 11, 30, 0) };
+            original.Claude.Buckets.Add(new UsageBucket
+            {
+                Label = "주간", UsedPercent = 16, WindowMinutes = 10080,
+                ResetsAt = new DateTime(2026, 8, 7, 10, 0, 0)
+            });
+            original.Codex = new ProviderUsage { Name = "Codex" };
+
+            UsageCache.Save(cachePath, original);
+            Assert(File.Exists(cachePath), "Saving a cache must create the file (including parent dirs).");
+
+            UsageSnapshot loaded = UsageCache.Load(cachePath);
+            Assert(loaded != null, "A saved cache must load back successfully.");
+            Assert(loaded.Claude.Buckets.Count == 1 &&
+                loaded.Claude.Buckets[0].UsedPercent == 16 &&
+                loaded.Claude.Buckets[0].ResetsAt.HasValue &&
+                loaded.Claude.Buckets[0].ResetsAt.Value.Hour == 10,
+                "A round-tripped bucket must keep its percent and reset time.");
+            Assert(loaded.Claude.CollectedAt.HasValue &&
+                loaded.Claude.CollectedAt.Value.Hour == 11,
+                "A round-tripped provider must keep its collected timestamp.");
+
+            Assert(UsageCache.Load(Path.Combine(root, "missing.json")) == null,
+                "Loading a missing cache file must return null, not throw.");
+
+            Console.WriteLine("Usage cache round-trip tests passed.");
         }
 
         private static void TestUpdateChecker(string root)

@@ -41,6 +41,11 @@ namespace TokenBar
         {
             return Path.Combine(Root(), id, "codex");
         }
+
+        public static string CacheFile(string id)
+        {
+            return Path.Combine(Root(), id, "cache.json");
+        }
     }
 
     internal sealed class AccountConfig
