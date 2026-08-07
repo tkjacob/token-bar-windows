@@ -18,12 +18,30 @@ namespace TokenBar
             @"\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))",
             RegexOptions.Compiled);
 
+        // Multiple accounts refresh concurrently (one ThreadPool item per
+        // account), but each Claude fetch spawns a real ConPTY + CLI process
+        // and depends on fixed-millisecond timing to type "/usage" and read
+        // it back. Several of those running at once contend for CPU and the
+        // timing budget stops being enough, so every one of them can come
+        // back empty at once. Serializing just the Claude portion (Codex is
+        // cheap local file reads, left concurrent) fixes that at the cost of
+        // accounts finishing one after another instead of all at once.
+        private static readonly object CollectLock = new object();
+
         public static ProviderUsage Collect()
         {
             return Collect(null);
         }
 
         public static ProviderUsage Collect(string claudeConfigDir)
+        {
+            lock (CollectLock)
+            {
+                return CollectLocked(claudeConfigDir);
+            }
+        }
+
+        private static ProviderUsage CollectLocked(string claudeConfigDir)
         {
             ProviderUsage result = new ProviderUsage { Name = "Claude", CollectedAt = DateTime.Now };
             try

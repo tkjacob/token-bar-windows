@@ -4,7 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.5-blue)
+![Version](https://img.shields.io/badge/version-1.0.6-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -156,6 +156,11 @@ Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤�
 `api.github.com/repos/tkjacob/token-bar-windows/releases/latest`의 공개 Release
 메타데이터만 인증 없이 조회합니다. Codex·Claude 사용량이나 사용자 식별정보는 전송하지
 않으며, 사용자의 클릭 없이 파일을 다운로드하거나 설치하지 않습니다.
+
+## v1.0.6
+
+- 여러 계정이 동시에 새로고침될 때 Claude 수집이 서로 경합해서 한꺼번에 실패하던
+  문제를 고쳤습니다. Claude 조회를 계정별로 순차 실행하도록 바꿨습니다.
 
 ## v1.0.5
 
