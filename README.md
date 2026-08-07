@@ -4,7 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.3-blue)
+![Version](https://img.shields.io/badge/version-1.0.4-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -156,6 +156,18 @@ Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤�
 `api.github.com/repos/tkjacob/token-bar-windows/releases/latest`의 공개 Release
 메타데이터만 인증 없이 조회합니다. Codex·Claude 사용량이나 사용자 식별정보는 전송하지
 않으며, 사용자의 클릭 없이 파일을 다운로드하거나 설치하지 않습니다.
+
+## v1.0.4
+
+- 계정을 이메일 주소로 식별하도록 바꿨습니다. 같은 이메일로 Claude·Codex를 각각 로그인하면
+  자동으로 한 계정 카드에 합쳐지고, 다르면 별도 계정으로 표시됩니다.
+- 계정별 로그인 정보를 완전히 분리된 폴더에 저장해 계정 간 데이터가 섞이지 않습니다.
+- 계정 추가·삭제가 앱 재시작 없이 즉시 반영됩니다.
+- 최신 Claude Code 버전에서 `/usage` 명령이 자동완성 타이밍 때문에 아예 실행되지 않던
+  문제를 고쳤습니다.
+- 주간(7d) 사용량 리셋 시간이 프로모션 배너 텍스트 때문에 파싱되지 않던 문제를 고쳤습니다.
+- 연도가 없는 리셋 시각("Aug 7, 10am")이 잘못 계산되던 문제를 고쳤습니다.
+- 계정 카드 사이 여백을 넓히고, 새로고침 중에는 "불러오는 중..."을 표시합니다.
 
 ## v1.0.3
 

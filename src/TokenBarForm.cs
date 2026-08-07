@@ -813,7 +813,7 @@ namespace TokenBar
         internal const int TopMargin = 60;
         internal const int AddAccountRowHeight = 22;
         internal const int AccountLabelHeight = 32;
-        internal const int AccountGap = 14;
+        internal const int AccountGap = 22;
         internal const int ContentTop = TopMargin + AddAccountRowHeight + AccountGap;
         internal const int ClaudeCardHeight = 112;
         internal const int EmptyStateHeight = 40;
