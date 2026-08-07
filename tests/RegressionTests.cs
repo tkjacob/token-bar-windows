@@ -42,6 +42,7 @@ namespace TokenBar.Tests
                 TestTimeoutBudget();
                 TestClaudeCommands(Path.Combine(root, "commands"));
                 TestClaudeResetParsing();
+                TestClaudeUsagePercentParsing();
                 TestDisplayPolicy(Path.Combine(root, "settings"));
                 TestAccounts(Path.Combine(root, "accounts"));
                 TestAccountSetupHelpers(Path.Combine(root, "account-setup"));
@@ -302,6 +303,40 @@ namespace TokenBar.Tests
                 "promo banner glued onto the same line.");
 
             Console.WriteLine("Claude reset-time parsing tests passed.");
+        }
+
+        private static void TestClaudeUsagePercentParsing()
+        {
+            // Claude Code redraws /usage twice in the same captured buffer:
+            // a rough estimate, then a corrected value after "Scanning local
+            // sessions…". The first regex match would grab the stale
+            // estimate — the parser must take the last (settled) one.
+            ProviderUsage tworenders = new ProviderUsage { Name = "Claude" };
+            ClaudeUsageCollector.ParseUsage(
+                "Current session\n  41% used\n  Resets 11:30am\n\n" +
+                "Current week (all models)\n  16% used\n  Resets Aug 7, 10am\n\n" +
+                "Scanning local sessions...\n" +
+                "Current session\n  42% used\n  Resets 11:29am\n\n" +
+                "Current week (all models)\n  17% used\n  Resets Aug 7, 9:59am\n",
+                tworenders);
+            Assert(tworenders.Buckets.Count == 2,
+                "Both buckets must be parsed when the buffer holds two redraws.");
+            Assert(tworenders.Buckets[0].UsedPercent == 42,
+                "The session percent must come from the final redraw (42%), not the stale first one (41%).");
+            Assert(tworenders.Buckets[1].UsedPercent == 17,
+                "The weekly percent must come from the final redraw (17%), not the stale first one (16%).");
+
+            // A "used" percent over 100 is impossible — it means the capture
+            // glued digits together across overlapping render fragments.
+            // Treat it as a failed parse rather than showing a bogus number.
+            ProviderUsage impossiblePercent = new ProviderUsage { Name = "Claude" };
+            ClaudeUsageCollector.ParseUsage(
+                "Current session\n  107% used\n  Resets 11:30am\n",
+                impossiblePercent);
+            Assert(impossiblePercent.Buckets.Count == 0,
+                "A used percent over 100 must be rejected, not treated as real data.");
+
+            Console.WriteLine("Claude usage percent parsing tests passed.");
         }
 
         private static void TestDisplayPolicy(string root)

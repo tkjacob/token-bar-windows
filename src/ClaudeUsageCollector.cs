@@ -106,27 +106,50 @@ namespace TokenBar
             // after it, so an unbounded lazy capture with an incomplete
             // lookahead list runs all the way to the end of the captured
             // terminal buffer and turns the whole reset time into garbage.
-            Match session = Regex.Match(text,
-                @"Current\s+session.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Current\s+week|All\s+models|Sonnet|Opus|Extra\s+usage|\+\d|$)",
-                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            //
+            // Claude Code redraws the /usage screen twice: an initial rough
+            // estimate, then a corrected one after "Scanning local
+            // sessions…" finishes. Both renders land in the same captured
+            // buffer, so the first regex match is the stale estimate — take
+            // the LAST match instead to get the settled, accurate numbers.
+            //
+            // The gap between "used" and "Resets" must not cross into
+            // another block's "X% used" marker — otherwise, if this block's
+            // own Resets text doesn't satisfy the lookahead within the
+            // bound (e.g. an early render with no trailing timezone/promo
+            // text to anchor on), the lazy ".*?" backtracks past it and
+            // grabs the *next* block's Resets instead, pairing this block's
+            // percent with a different block's reset time.
+            const string UsedToResetsGap = @"(?:(?!\d{1,3}\s*%\s*used).)*?";
+
+            Match session = LastMatch(text,
+                @"Current\s+session.*?(\d{1,3})\s*%\s*used" + UsedToResetsGap +
+                @"Resets\s+(.{1,60}?)(?=Current\s+week|All\s+models|Sonnet|Opus|Extra\s+usage|\+\d|$)");
             if (!session.Success)
             {
-                session = Regex.Match(text,
-                    @"Current.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Weekly|Week|Extra|\+\d|$)",
-                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                session = LastMatch(text,
+                    @"Current.*?(\d{1,3})\s*%\s*used" + UsedToResetsGap +
+                    @"Resets\s+(.{1,60}?)(?=Weekly|Week|Extra|\+\d|$)");
             }
             AddMatch(result, session, "현재 세션", 300);
 
-            Match week = Regex.Match(text,
-                @"(?:Current\s+week|All\s+models).*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Sonnet|Opus|Extra\s+usage|\+\d|$)",
-                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            Match week = LastMatch(text,
+                @"(?:Current\s+week|All\s+models).*?(\d{1,3})\s*%\s*used" + UsedToResetsGap +
+                @"Resets\s+(.{1,60}?)(?=Sonnet|Opus|Extra\s+usage|\+\d|$)");
             if (!week.Success)
             {
-                week = Regex.Match(text,
-                    @"Weekly.*?(\d{1,3})\s*%\s*used.*?Resets\s+(.{1,60}?)(?=Extra|\+\d|$)",
-                    RegexOptions.IgnoreCase | RegexOptions.Singleline);
+                week = LastMatch(text,
+                    @"Weekly.*?(\d{1,3})\s*%\s*used" + UsedToResetsGap +
+                    @"Resets\s+(.{1,60}?)(?=Extra|\+\d|$)");
             }
             AddMatch(result, week, "주간", 10080);
+        }
+
+        private static Match LastMatch(string text, string pattern)
+        {
+            MatchCollection matches = Regex.Matches(text, pattern,
+                RegexOptions.IgnoreCase | RegexOptions.Singleline);
+            return matches.Count > 0 ? matches[matches.Count - 1] : Match.Empty;
         }
 
         private static void AddMatch(ProviderUsage result, Match match, string label,
@@ -137,6 +160,12 @@ namespace TokenBar
             if (!double.TryParse(match.Groups[1].Value, NumberStyles.Float,
                 CultureInfo.InvariantCulture, out used))
                 return;
+            // A "used" percent can never exceed 100 — if it does, the capture
+            // grabbed garbage (e.g. digits glued together across two
+            // overlapping terminal redraws) rather than the real number.
+            // Treat it as a failed parse instead of showing an impossible
+            // value or a wrongly-clamped 0% remaining.
+            if (used > 100) return;
 
             result.Buckets.Add(new UsageBucket
             {

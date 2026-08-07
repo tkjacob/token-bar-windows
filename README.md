@@ -4,7 +4,7 @@ Codex와 Claude Code의 남은 사용량을 Windows 시스템 트레이에서 �
 
 ![Windows](https://img.shields.io/badge/Windows-10%2F11-0078D4)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-1.0.6-blue)
+![Version](https://img.shields.io/badge/version-1.0.7-blue)
 
 ![Token Bar 실행 화면](design/token-bar-app.png)
 
@@ -156,6 +156,16 @@ Token Bar가 저장·표시하는 정보는 사용률, 초기화 시각, 이벤�
 `api.github.com/repos/tkjacob/token-bar-windows/releases/latest`의 공개 Release
 메타데이터만 인증 없이 조회합니다. Codex·Claude 사용량이나 사용자 식별정보는 전송하지
 않으며, 사용자의 클릭 없이 파일을 다운로드하거나 설치하지 않습니다.
+
+## v1.0.7
+
+- Claude 화면이 초기 추정치를 보여준 뒤 "Scanning local sessions..."로 값을 다시
+  계산해 갱신하는데, 정규식이 초기(부정확한) 값을 잡던 문제를 고쳤습니다 —
+  이제 마지막(정확한) 값을 사용합니다.
+- 두 화면 갱신이 겹쳐 캡처됐을 때 퍼센트와 리셋 시간이 서로 다른 갱신에서
+  뒤섞여 매칭되던 문제를 고쳤습니다.
+- 100%를 넘는 값처럼 불가능한 사용률이 잡히면 화면에 표시하지 않고 파싱 실패로
+  처리하도록 방어 로직을 추가했습니다.
 
 ## v1.0.6
 
